@@ -1,0 +1,13 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "cargo test": true,
+        "cargo check": true,
+        "cargo run": true
+    },
+    "rust-analyzer.cargo.features": [
+        "reactor"
+    ],
+    "rust-analyzer.check.features": [
+        "reactor"
+    ]
+}

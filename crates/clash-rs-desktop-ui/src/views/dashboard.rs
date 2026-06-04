@@ -1,0 +1,2135 @@
+use windows_reactor::*;
+
+use std::sync::{Mutex, OnceLock};
+
+use crate::controller_actions::{
+    reactor_close_all_connections_text, reactor_close_connection_text,
+    reactor_group_delay_text, reactor_healthcheck_provider_proxy_text,
+    reactor_healthcheck_proxy_provider_text, reactor_patch_configs_text,
+    reactor_reload_configs_text,
+    reactor_select_proxy_text, reactor_stream_messages,
+    reactor_update_proxy_provider_text, reactor_update_rule_provider_text,
+};
+use crate::controller_models::{
+    ConnectionRow, ConnectionsSnapshot, DnsSnapshot, OverviewSnapshot, ProviderSnapshot,
+    ProxySnapshot, ProxyRow, RulesSnapshot, load_connections_snapshot, load_dns_snapshot,
+    load_overview_snapshot, load_provider_snapshot, load_proxy_snapshot, load_rules_snapshot,
+    load_traffic_speed,
+};
+use crate::runtime_actions::{
+    reactor_restart_core_text, reactor_start_core_text, reactor_stop_core_text,
+};
+use crate::views::{
+    design::{
+        Tone, ToastQueue, empty_state as design_empty_state, metric_card, section,
+        status_pill, toolbar,
+    },
+    output::{SafetyState, confirm_label, guarded_action},
+    profiles::ProfilesState,
+};
+
+pub(crate) fn looks_like_failure(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("failed")
+        || lower.contains("error")
+        || lower.starts_with("could not")
+        || lower.contains("denied")
+}
+
+pub(crate) fn report_action(toasts: &ToastQueue, success: &str, result: &str) {
+    if looks_like_failure(result) {
+        let title = format!("{success} failed");
+        toasts.push(title, trim_one_line(result), Tone::Critical);
+    }
+}
+
+/// Run a blocking action on a worker thread. Marks busy on UI thread,
+/// runs `op`, then refreshes the overview snapshot and reports failures.
+pub(crate) fn spawn_action<F>(
+    set_action_busy: AsyncSetState<bool>,
+    set_overview: AsyncSetState<OverviewSnapshot>,
+    toasts: ToastQueue,
+    label: &'static str,
+    op: F,
+) where
+    F: FnOnce() -> String + Send + 'static,
+{
+    set_action_busy.call(true);
+    std::thread::spawn(move || {
+        let result = op();
+        let mut snapshot = load_overview_snapshot();
+        let (up, down) = load_traffic_speed();
+        snapshot.upload_speed = up;
+        snapshot.download_speed = down;
+        set_overview.call(snapshot);
+        set_action_busy.call(false);
+        report_action(&toasts, label, &result);
+    });
+}
+
+pub(crate) fn trim_one_line(s: &str) -> String {
+    let line = s.lines().next().unwrap_or(s);
+    if line.len() > 140 {
+        format!("{}…", &line[..140])
+    } else {
+        line.to_owned()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct DashboardState {
+    pub(crate) overview: OverviewSnapshot,
+    pub(crate) set_overview: AsyncSetState<OverviewSnapshot>,
+    pub(crate) proxies: ProxySnapshot,
+    pub(crate) set_proxies: AsyncSetState<ProxySnapshot>,
+    pub(crate) providers: ProviderSnapshot,
+    pub(crate) set_providers: AsyncSetState<ProviderSnapshot>,
+    pub(crate) rules: RulesSnapshot,
+    pub(crate) set_rules: AsyncSetState<RulesSnapshot>,
+    pub(crate) connections: ConnectionsSnapshot,
+    pub(crate) set_connections: AsyncSetState<ConnectionsSnapshot>,
+    pub(crate) dns: DnsSnapshot,
+    pub(crate) set_dns: AsyncSetState<DnsSnapshot>,
+    pub(crate) dns_name: String,
+    pub(crate) set_dns_name: SetState<String>,
+    pub(crate) dns_type: String,
+    pub(crate) set_dns_type: SetState<String>,
+    pub(crate) config_mode: String,
+    pub(crate) set_config_mode: SetState<String>,
+    pub(crate) config_log_level: String,
+    pub(crate) set_config_log_level: SetState<String>,
+    pub(crate) config_mixed_port: String,
+    pub(crate) set_config_mixed_port: SetState<String>,
+    pub(crate) config_bind_address: String,
+    pub(crate) set_config_bind_address: SetState<String>,
+    pub(crate) config_allow_lan: bool,
+    pub(crate) set_config_allow_lan: SetState<bool>,
+    pub(crate) config_allow_lan_dirty: bool,
+    pub(crate) set_config_allow_lan_dirty: SetState<bool>,
+    pub(crate) config_ipv6: bool,
+    pub(crate) set_config_ipv6: SetState<bool>,
+    pub(crate) config_ipv6_dirty: bool,
+    pub(crate) set_config_ipv6_dirty: SetState<bool>,
+    pub(crate) config_reload_path: String,
+    pub(crate) set_config_reload_path: SetState<String>,
+    pub(crate) proxy_provider: String,
+    pub(crate) set_proxy_provider: SetState<String>,
+    pub(crate) provider_proxy: String,
+    pub(crate) set_provider_proxy: SetState<String>,
+    pub(crate) rule_provider: String,
+    pub(crate) set_rule_provider: SetState<String>,
+    pub(crate) rules_filter: String,
+    pub(crate) set_rules_filter: SetState<String>,
+    pub(crate) connections_filter: String,
+    pub(crate) set_connections_filter: SetState<String>,
+    pub(crate) connection_selected: i32,
+    pub(crate) set_connection_selected: SetState<i32>,
+    pub(crate) action_busy: bool,
+    pub(crate) set_action_busy: AsyncSetState<bool>,
+    pub(crate) logs_status: String,
+    pub(crate) set_logs_status: AsyncSetState<String>,
+    pub(crate) logs_level_filter: String,
+    pub(crate) set_logs_level_filter: SetState<String>,
+    pub(crate) logs_paused: bool,
+    pub(crate) set_logs_paused: SetState<bool>,
+    pub(crate) logs_lines: Vec<String>,
+    pub(crate) set_logs_lines: AsyncSetState<Vec<String>>,
+    pub(crate) flows_status: String,
+    pub(crate) set_flows_status: AsyncSetState<String>,
+    pub(crate) flows_include_closed: bool,
+    pub(crate) set_flows_include_closed: SetState<bool>,
+    pub(crate) flows_filter: String,
+    pub(crate) set_flows_filter: SetState<String>,
+    pub(crate) flows_protocol: String,
+    pub(crate) set_flows_protocol: SetState<String>,
+    pub(crate) flows_sort: String,
+    pub(crate) set_flows_sort: SetState<String>,
+    pub(crate) flows_lines: Vec<String>,
+    pub(crate) set_flows_lines: AsyncSetState<Vec<String>>,
+}
+
+const LOG_BUFFER_CAP: usize = 500;
+const FLOW_BUFFER_CAP: usize = 300;
+
+static LOG_BUFFER: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static FLOW_BUFFER: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+pub(crate) fn refresh_connections_live(
+    set_action_busy: AsyncSetState<bool>,
+    set_connections: AsyncSetState<ConnectionsSnapshot>,
+) {
+    set_action_busy.call(true);
+    std::thread::spawn(move || {
+        let snapshot = load_connections_snapshot();
+        set_connections.call(snapshot);
+        set_action_busy.call(false);
+    });
+}
+
+pub(crate) fn refresh_overview_live(
+    set_overview: AsyncSetState<OverviewSnapshot>,
+) {
+    std::thread::spawn(move || {
+        let mut snapshot = load_overview_snapshot();
+        let (up, down) = load_traffic_speed();
+        snapshot.upload_speed = up;
+        snapshot.download_speed = down;
+        set_overview.call(snapshot);
+    });
+}
+
+pub(crate) fn refresh_proxies_live(set_proxies: AsyncSetState<ProxySnapshot>) {
+    std::thread::spawn(move || {
+        set_proxies.call(load_proxy_snapshot());
+    });
+}
+
+pub(crate) fn refresh_providers_live(set_providers: AsyncSetState<ProviderSnapshot>) {
+    std::thread::spawn(move || {
+        set_providers.call(load_provider_snapshot());
+    });
+}
+
+pub(crate) fn refresh_rules_live(set_rules: AsyncSetState<RulesSnapshot>) {
+    std::thread::spawn(move || {
+        set_rules.call(load_rules_snapshot());
+    });
+}
+
+pub(crate) fn refresh_logs_live(
+    set_action_busy: AsyncSetState<bool>,
+    set_logs_status: AsyncSetState<String>,
+    set_logs_lines: AsyncSetState<Vec<String>>,
+    logs_paused: bool,
+) {
+    if logs_paused {
+        set_logs_status.call("Paused".to_owned());
+        return;
+    }
+    set_action_busy.call(true);
+    std::thread::spawn(move || {
+        match reactor_stream_messages("/ws/logs", 120, 4) {
+            Ok(messages) => {
+                let mut merged = with_buffer(&LOG_BUFFER, |buffer| {
+                    buffer.extend(messages);
+                    *buffer = trim_tail(std::mem::take(buffer), LOG_BUFFER_CAP);
+                    buffer.clone()
+                });
+                merged = trim_tail(merged, LOG_BUFFER_CAP);
+                set_logs_lines.call(merged);
+                set_logs_status.call("Connected".to_owned());
+            }
+            Err(_) => {
+                set_logs_status.call("Disconnected".to_owned());
+            }
+        }
+        set_action_busy.call(false);
+    });
+}
+
+pub(crate) fn refresh_flows_live(
+    set_action_busy: AsyncSetState<bool>,
+    set_flows_status: AsyncSetState<String>,
+    set_flows_lines: AsyncSetState<Vec<String>>,
+    include_closed: bool,
+) {
+    set_action_busy.call(true);
+    std::thread::spawn(move || {
+        let path = if include_closed {
+            "/ws/flows?interval=5&top=50&include_closed=true"
+        } else {
+            "/ws/flows?interval=5&top=50&include_closed=false"
+        };
+        match reactor_stream_messages(path, 60, 5) {
+            Ok(messages) => {
+                let merged = with_buffer(&FLOW_BUFFER, |buffer| {
+                    buffer.extend(messages);
+                    *buffer = trim_tail(std::mem::take(buffer), FLOW_BUFFER_CAP);
+                    buffer.clone()
+                });
+                set_flows_lines.call(merged);
+                set_flows_status.call("Connected".to_owned());
+            }
+            Err(_) => {
+                set_flows_status.call("Disconnected".to_owned());
+            }
+        }
+        set_action_busy.call(false);
+    });
+}
+
+pub(crate) fn clear_logs_buffer(set_logs_lines: AsyncSetState<Vec<String>>) {
+    with_buffer(&LOG_BUFFER, |buffer| {
+        buffer.clear();
+    });
+    set_logs_lines.call(Vec::new());
+}
+
+fn with_buffer<T>(cell: &OnceLock<Mutex<Vec<String>>>, f: impl FnOnce(&mut Vec<String>) -> T) -> T {
+    let mutex = cell.get_or_init(|| Mutex::new(Vec::new()));
+    let mut guard = match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    f(&mut guard)
+}
+
+pub(crate) fn overview_page(
+    state: &DashboardState,
+    profiles: &ProfilesState,
+    set_selected_page: SetState<String>,
+    safety: &SafetyState,
+    toasts: &ToastQueue,
+) -> Element {
+    let setup = setup_panel(state, profiles, set_selected_page);
+    let mut sections: Vec<Element> = vec![
+        overview_hero(state, toasts).into(),
+        metric_strip(state).into(),
+    ];
+    if !matches!(setup, Element::Empty) {
+        sections.push(setup);
+    }
+    sections.push(section(
+        "Runtime configuration",
+        Some("Patch the live core or hot-reload from a different config path."),
+        vstack((config_editor(state), config_actions(state, safety, toasts))).spacing(14.0),
+    ));
+    vstack(sections).spacing(14.0).into()
+}
+
+fn overview_hero(state: &DashboardState, toasts: &ToastQueue) -> Element {
+    let (status_label, status_color) = core_status_display(state);
+    let detail = if state.overview.version != "Offline" && state.overview.version != "-" {
+        state.overview.version.clone()
+    } else {
+        String::new()
+    };
+    border(
+        hstack((
+            vstack((
+                text_block(status_label)
+                    .font_size(24.0)
+                    .bold()
+                    .foreground(status_color),
+                text_block(detail)
+                    .font_size(12.0)
+                    .foreground(tokens::SecondaryText),
+            ))
+            .spacing(4.0),
+            hstack((
+                button("Start")
+                    .icon(SymbolGlyph::Play)
+                    .on_click({
+                        let set_overview = state.set_overview.clone();
+                        let set_action_busy = state.set_action_busy.clone();
+                        let toasts = toasts.clone();
+                        move || {
+                            spawn_action(
+                                set_action_busy.clone(),
+                                set_overview.clone(),
+                                toasts.clone(),
+                                "Core started",
+                                reactor_start_core_text,
+                            );
+                        }
+                    })
+                    .accent(),
+                button("Stop")
+                    .icon(SymbolGlyph::Pause)
+                    .on_click({
+                        let set_overview = state.set_overview.clone();
+                        let set_action_busy = state.set_action_busy.clone();
+                        let toasts = toasts.clone();
+                        move || {
+                            spawn_action(
+                                set_action_busy.clone(),
+                                set_overview.clone(),
+                                toasts.clone(),
+                                "Core stopped",
+                                reactor_stop_core_text,
+                            );
+                        }
+                    })
+                    .subtle(),
+                button("Restart")
+                    .icon(SymbolGlyph::Redo)
+                    .on_click({
+                        let set_overview = state.set_overview.clone();
+                        let set_action_busy = state.set_action_busy.clone();
+                        let toasts = toasts.clone();
+                        move || {
+                            spawn_action(
+                                set_action_busy.clone(),
+                                set_overview.clone(),
+                                toasts.clone(),
+                                "Core restarted",
+                                reactor_restart_core_text,
+                            );
+                        }
+                    })
+                    .subtle(),
+            ))
+            .spacing(8.0),
+        ))
+        .spacing(24.0),
+    )
+    .padding(Thickness::uniform(20.0))
+    .corner_radius(10.0)
+    .background(tokens::CardBackground)
+    .border_brush(tokens::CardStroke)
+    .border_thickness(Thickness::uniform(1.0))
+    .into()
+}
+
+fn core_status_display(state: &DashboardState) -> (String, windows_reactor::ThemeRef) {
+    let lc = state.overview.lifecycle.as_str();
+    if lc.starts_with("running") {
+        return ("Running".to_owned(), tokens::SystemSuccess);
+    }
+    if lc.starts_with("starting") {
+        return ("Starting…".to_owned(), tokens::SystemAttention);
+    }
+    if lc.starts_with("stopping") {
+        return ("Stopping…".to_owned(), tokens::SystemAttention);
+    }
+    if lc.starts_with("failed") {
+        return ("Failed".to_owned(), tokens::SystemCritical);
+    }
+    if lc.starts_with("needs Windows service") {
+        return ("Needs service".to_owned(), tokens::SystemAttention);
+    }
+    if state.overview.connected {
+        return ("Reachable".to_owned(), tokens::SystemSuccess);
+    }
+    ("Stopped".to_owned(), tokens::SecondaryText)
+}
+
+fn metric_strip(state: &DashboardState) -> Element {
+    hstack((
+        metric_card("Upload", &state.overview.upload_speed, "Live throughput"),
+        metric_card("Download", &state.overview.download_speed, "Live throughput"),
+        metric_card("Memory", &state.overview.memory, "Resident set"),
+        metric_card("Connections", &state.overview.connections, "Active flows"),
+        metric_card("Mixed Port", &state.overview.mixed_port, "Listening on"),
+    ))
+    .spacing(12.0)
+    .into()
+}
+
+fn setup_panel(
+    state: &DashboardState,
+    profiles: &ProfilesState,
+    set_selected_page: SetState<String>,
+) -> Element {
+    let profile_ready = !profiles.profile_items.is_empty()
+        && !profiles
+            .profile_items
+            .iter()
+            .any(|item| item == "No profiles configured");
+    let core_ready = state.overview.version != "Offline" && state.overview.version != "-";
+    if core_ready && profile_ready && state.overview.connected {
+        return Element::Empty;
+    }
+    section(
+        "Get started",
+        Some("Finish these steps to bring the core online."),
+        vstack((
+            hstack((
+                setup_step(
+                    "1",
+                    if core_ready {
+                        "Core detected"
+                    } else {
+                        "Install or apply a core update"
+                    },
+                    core_ready,
+                ),
+                setup_step(
+                    "2",
+                    if profile_ready {
+                        "Profile configured"
+                    } else {
+                        "Add a profile"
+                    },
+                    profile_ready,
+                ),
+                setup_step(
+                    "3",
+                    if state.overview.connected {
+                        "Controller reachable"
+                    } else {
+                        "Start and refresh"
+                    },
+                    state.overview.connected,
+                ),
+            ))
+            .spacing(10.0),
+            hstack((
+                button("Manage profiles")
+                    .icon(SymbolGlyph::Favorite)
+                    .on_click({
+                        let set_selected_page = set_selected_page.clone();
+                        move || set_selected_page.call("profiles".to_owned())
+                    })
+                    .accent(),
+                button("Open settings")
+                    .icon(SymbolGlyph::Setting)
+                    .on_click({
+                        let set_selected_page = set_selected_page.clone();
+                        move || set_selected_page.call("settings".to_owned())
+                    })
+                    .subtle(),
+                button("Configure service")
+                    .icon(SymbolGlyph::People)
+                    .on_click({
+                        let set_selected_page = set_selected_page.clone();
+                        move || set_selected_page.call("service".to_owned())
+                    })
+                    .subtle(),
+            ))
+            .spacing(8.0),
+        ))
+        .spacing(12.0),
+    )
+}
+
+fn setup_step(number: &'static str, label: impl Into<String>, ok: bool) -> Element {
+    border(
+        hstack((
+            border(
+                text_block(if ok { "✓" } else { number }.to_owned())
+                    .font_size(13.0)
+                    .bold()
+                    .foreground(tokens::CardBackground),
+            )
+            .padding(Thickness::xy(10.0, 4.0))
+            .corner_radius(12.0)
+            .background(if ok {
+                tokens::SystemSuccess
+            } else {
+                tokens::SystemAttention
+            })
+            .border_brush(if ok {
+                tokens::SystemSuccess
+            } else {
+                tokens::SystemAttention
+            })
+            .border_thickness(Thickness::uniform(1.0)),
+            text_block(label.into()).font_size(13.0),
+        ))
+        .spacing(10.0),
+    )
+    .padding(Thickness::uniform(12.0))
+    .corner_radius(6.0)
+    .background(tokens::SubtleFill)
+    .border_brush(tokens::CardStroke)
+    .border_thickness(Thickness::uniform(1.0))
+    .width(260.0)
+    .into()
+}
+
+pub(crate) fn proxies_page(state: &DashboardState) -> Element {
+    let groups: Vec<&ProxyRow> = state
+        .proxies
+        .rows
+        .iter()
+        .filter(|row| !row.member_names.is_empty())
+        .collect();
+    let statics: Vec<&ProxyRow> = state
+        .proxies
+        .rows
+        .iter()
+        .filter(|row| row.member_names.is_empty())
+        .collect();
+
+    let group_cards: Vec<Element> = if groups.is_empty() {
+        vec![empty_row(&state.proxies.message)]
+    } else {
+        groups
+            .iter()
+            .map(|group| proxy_group_card(group, &state.set_proxies))
+            .collect()
+    };
+
+    vstack((
+        toolbar(hstack((
+            text_block(format!(
+                "{} groups · {} static",
+                groups.len(),
+                statics.len()
+            ))
+            .font_size(12.0)
+            .foreground(tokens::SecondaryText),
+        ))
+        .spacing(8.0)),
+        section(
+            "Proxy groups",
+            Some("Tap a member to switch the active proxy for the group."),
+            scroll_view(vstack(group_cards).spacing(10.0)).height(420.0),
+        ),
+        section(
+            "Static proxies",
+            Some("Direct, reject, and individual outbound proxies."),
+            proxy_static_table(&statics),
+        ),
+    ))
+    .spacing(14.0)
+    .into()
+}
+
+fn proxy_group_card(
+    group: &ProxyRow,
+    set_proxies: &AsyncSetState<ProxySnapshot>,
+) -> Element {
+    let chips: Vec<(String, Element)> = group
+        .member_names
+        .iter()
+        .take(48)
+        .map(|member| {
+            let active = member == &group.current;
+            let group_name = group.name.clone();
+            let member_name = member.clone();
+            let set_proxies = set_proxies.clone();
+            let chip = button(member.clone()).on_click(move || {
+                let group_name = group_name.clone();
+                let member_name = member_name.clone();
+                let set_proxies = set_proxies.clone();
+                std::thread::spawn(move || {
+                    reactor_select_proxy_text(&group_name, &member_name);
+                    set_proxies.call(load_proxy_snapshot());
+                });
+            });
+            let element: Element = if active { chip.accent() } else { chip.subtle() }.into();
+            (member.clone(), element)
+        })
+        .collect();
+
+    border(
+        vstack((
+            hstack((
+                text_block(group.name.clone()).font_size(15.0).bold(),
+                text_block(format!("[{}]", group.proxy_type))
+                    .font_size(12.0)
+                    .foreground(tokens::SecondaryText),
+                text_block(format!("→ {}", group.current))
+                    .font_size(13.0)
+                    .foreground(tokens::SecondaryText),
+                button("Test")
+                    .icon(SymbolGlyph::Sync)
+                    .on_click({
+                        let group_name = group.name.clone();
+                        let set_proxies = set_proxies.clone();
+                        move || {
+                            let group_name = group_name.clone();
+                            let set_proxies = set_proxies.clone();
+                            std::thread::spawn(move || {
+                                reactor_group_delay_text(&group_name);
+                                set_proxies.call(load_proxy_snapshot());
+                            });
+                        }
+                    })
+                    .subtle(),
+            ))
+            .spacing(8.0),
+            wrap_chips(chips),
+        ))
+        .spacing(8.0),
+    )
+    .padding(Thickness::uniform(12.0))
+    .corner_radius(8.0)
+    .background(tokens::CardBackground)
+    .border_brush(tokens::CardStroke)
+    .border_thickness(Thickness::uniform(1.0))
+    .into()
+}
+
+fn wrap_chips(chips: Vec<(String, Element)>) -> Element {
+    const ROW_BUDGET: usize = 64;
+    let mut rows: Vec<Vec<Element>> = Vec::new();
+    let mut current: Vec<Element> = Vec::new();
+    let mut current_len: usize = 0;
+    for (label, chip) in chips {
+        let weight = label.chars().count().max(8) + 4;
+        if current_len + weight > ROW_BUDGET && !current.is_empty() {
+            rows.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+        current.push(chip);
+        current_len += weight;
+    }
+    if !current.is_empty() {
+        rows.push(current);
+    }
+    let row_elements: Vec<Element> = rows
+        .into_iter()
+        .map(|row| hstack(row).spacing(6.0).into())
+        .collect();
+    vstack(row_elements).spacing(6.0).into()
+}
+
+fn proxy_static_table(rows: &[&ProxyRow]) -> Element {
+    let mut out = vec![table_header_cols(&[
+        ("Name", 220.0),
+        ("Type", 120.0),
+        ("Delay", 100.0),
+    ])];
+    if rows.is_empty() {
+        out.push(empty_row("No static proxies."));
+    } else {
+        for proxy in rows.iter().take(60) {
+            out.push(table_row_cols(vec![
+                (proxy.name.clone(), 220.0),
+                (proxy.proxy_type.clone(), 120.0),
+                (proxy.delay.clone(), 100.0),
+            ]));
+        }
+    }
+    table_panel(out)
+}
+
+pub(crate) fn providers_page(state: &DashboardState) -> Element {
+    let providers = proxy_provider_items(&state.providers);
+    let proxies = proxy_items(&state.proxies);
+    let rule_providers = rule_provider_items(&state.providers);
+    let proxy_count = state
+        .providers
+        .rows
+        .iter()
+        .filter(|row| row.scope.eq_ignore_ascii_case("proxy"))
+        .count();
+    let rule_count = state
+        .providers
+        .rows
+        .iter()
+        .filter(|row| row.scope.eq_ignore_ascii_case("rule"))
+        .count();
+    vstack((
+        toolbar(hstack((
+            text_block(format!(
+                "{proxy_count} proxy providers · {rule_count} rule providers"
+            ))
+            .font_size(12.0)
+            .foreground(tokens::SecondaryText),
+        ))
+        .spacing(8.0)),
+        section(
+            "Proxy providers",
+            Some("Subscription sources that supply outbound proxy entries."),
+            vstack((
+                hstack((
+                    ComboBox::new(providers.clone())
+                        .placeholder("Provider")
+                        .selected_index(choice_index_owned(&state.proxy_provider, &providers))
+                        .on_selection_changed({
+                            let set_proxy_provider = state.set_proxy_provider.clone();
+                            move |index| set_choice_owned(index, &providers, &set_proxy_provider)
+                        })
+                        .width(240.0),
+                    ComboBox::new(proxies.clone())
+                        .placeholder("Proxy")
+                        .selected_index(choice_index_owned(&state.provider_proxy, &proxies))
+                        .on_selection_changed({
+                            let set_provider_proxy = state.set_provider_proxy.clone();
+                            move |index| set_choice_owned(index, &proxies, &set_provider_proxy)
+                        })
+                        .width(240.0),
+                    button("Update")
+                        .icon(SymbolGlyph::Download)
+                        .on_click({
+                            let proxy_provider = state.proxy_provider.clone();
+                            let set_providers = state.set_providers.clone();
+                            let set_proxies = state.set_proxies.clone();
+                            move || {
+                                let proxy_provider = proxy_provider.clone();
+                                let set_providers = set_providers.clone();
+                                let set_proxies = set_proxies.clone();
+                                std::thread::spawn(move || {
+                                    reactor_update_proxy_provider_text(&proxy_provider);
+                                    set_providers.call(load_provider_snapshot());
+                                    set_proxies.call(load_proxy_snapshot());
+                                });
+                            }
+                        })
+                        .subtle(),
+                    button("Health check")
+                        .icon(SymbolGlyph::Sync)
+                        .on_click({
+                            let proxy_provider = state.proxy_provider.clone();
+                            let set_providers = state.set_providers.clone();
+                            move || {
+                                let proxy_provider = proxy_provider.clone();
+                                let set_providers = set_providers.clone();
+                                std::thread::spawn(move || {
+                                    reactor_healthcheck_proxy_provider_text(&proxy_provider);
+                                    set_providers.call(load_provider_snapshot());
+                                });
+                            }
+                        })
+                        .subtle(),
+                    button("Test proxy")
+                        .icon(SymbolGlyph::Sync)
+                        .on_click({
+                            let proxy_provider = state.proxy_provider.clone();
+                            let provider_proxy = state.provider_proxy.clone();
+                            let set_providers = state.set_providers.clone();
+                            move || {
+                                let proxy_provider = proxy_provider.clone();
+                                let provider_proxy = provider_proxy.clone();
+                                let set_providers = set_providers.clone();
+                                std::thread::spawn(move || {
+                                    reactor_healthcheck_provider_proxy_text(
+                                        &proxy_provider,
+                                        &provider_proxy,
+                                    );
+                                    set_providers.call(load_provider_snapshot());
+                                });
+                            }
+                        })
+                        .subtle(),
+                ))
+                .spacing(8.0),
+                proxy_provider_table(&state.providers),
+            ))
+            .spacing(10.0),
+        ),
+        section(
+            "Rule providers",
+            Some("External rule sets fetched and merged into the active config."),
+            vstack((
+                hstack((
+                    ComboBox::new(rule_providers.clone())
+                        .placeholder("Rule provider")
+                        .selected_index(choice_index_owned(&state.rule_provider, &rule_providers))
+                        .on_selection_changed({
+                            let set_rule_provider = state.set_rule_provider.clone();
+                            move |index| {
+                                set_choice_owned(index, &rule_providers, &set_rule_provider)
+                            }
+                        })
+                        .width(240.0),
+                    button("Update")
+                        .icon(SymbolGlyph::Download)
+                        .on_click({
+                            let rule_provider = state.rule_provider.clone();
+                            let set_rules = state.set_rules.clone();
+                            move || {
+                                let rule_provider = rule_provider.clone();
+                                let set_rules = set_rules.clone();
+                                std::thread::spawn(move || {
+                                    reactor_update_rule_provider_text(&rule_provider);
+                                    set_rules.call(load_rules_snapshot());
+                                });
+                            }
+                        })
+                        .subtle(),
+                ))
+                .spacing(8.0),
+                rule_provider_table(&state.providers),
+            ))
+            .spacing(10.0),
+        ),
+    ))
+    .spacing(14.0)
+    .into()
+}
+
+fn proxy_provider_table(snapshot: &ProviderSnapshot) -> Element {
+    let mut rows = vec![table_header_cols(&[
+        ("Name", 200.0),
+        ("Type", 100.0),
+        ("Vehicle", 110.0),
+        ("Count", 80.0),
+        ("Updated", 200.0),
+    ])];
+    let visible: Vec<&_> = snapshot
+        .rows
+        .iter()
+        .filter(|row| row.scope.eq_ignore_ascii_case("proxy"))
+        .collect();
+    if visible.is_empty() {
+        rows.push(empty_row("No proxy providers."));
+    } else {
+        for provider in visible.iter().take(60) {
+            rows.push(table_row_cols(vec![
+                (provider.name.clone(), 200.0),
+                (provider.provider_type.clone(), 100.0),
+                (provider.vehicle.clone(), 110.0),
+                (provider.count.clone(), 80.0),
+                (provider.updated_at.clone(), 200.0),
+            ]));
+        }
+    }
+    table_panel(rows)
+}
+
+fn rule_provider_table(snapshot: &ProviderSnapshot) -> Element {
+    let mut rows = vec![table_header_cols(&[
+        ("Name", 180.0),
+        ("Type", 90.0),
+        ("Vehicle", 100.0),
+        ("Behavior", 100.0),
+        ("Format", 90.0),
+        ("Count", 80.0),
+        ("Updated", 200.0),
+    ])];
+    let visible: Vec<&_> = snapshot
+        .rows
+        .iter()
+        .filter(|row| row.scope.eq_ignore_ascii_case("rule"))
+        .collect();
+    if visible.is_empty() {
+        rows.push(empty_row("No rule providers."));
+    } else {
+        for provider in visible.iter().take(60) {
+            rows.push(table_row_cols(vec![
+                (provider.name.clone(), 180.0),
+                (provider.provider_type.clone(), 90.0),
+                (provider.vehicle.clone(), 100.0),
+                (provider.behavior.clone(), 100.0),
+                (provider.format.clone(), 90.0),
+                (provider.count.clone(), 80.0),
+                (provider.updated_at.clone(), 200.0),
+            ]));
+        }
+    }
+    table_panel(rows)
+}
+
+pub(crate) fn rules_page(state: &DashboardState) -> Element {
+    vstack((
+        toolbar(hstack((
+            text_box(&state.rules_filter)
+                .placeholder("Search by type, payload, or proxy…")
+                .on_changed({
+                    let set_rules_filter = state.set_rules_filter.clone();
+                    move |value| set_rules_filter.call(value)
+                })
+                .width(360.0),
+            text_block(format!("{} rules", state.rules.rows.len()))
+                .font_size(12.0)
+                .foreground(tokens::SecondaryText),
+        ))
+        .spacing(8.0)),
+        rules_table(&state.rules, &state.rules_filter),
+    ))
+    .spacing(14.0)
+    .into()
+}
+
+pub(crate) fn connections_page(state: &DashboardState, safety: &SafetyState) -> Element {
+    let visible: Vec<&_> = state
+        .connections
+        .rows
+        .iter()
+        .filter(|connection| {
+            matches_filter(
+                &state.connections_filter,
+                &[
+                    &connection.id,
+                    &connection.host,
+                    &connection.asn,
+                    &connection.process,
+                    &connection.network,
+                    &connection.rule,
+                    &connection.chains,
+                ],
+            )
+        })
+        .collect();
+    let selected_idx = state.connection_selected;
+    let selected = if selected_idx >= 0 {
+        visible.get(selected_idx as usize).map(|r| (*r).clone())
+    } else {
+        None
+    };
+    vstack((
+        hstack((
+            metric_card("Upload", &state.connections.upload_total, "Cumulative"),
+            metric_card("Download", &state.connections.download_total, "Cumulative"),
+            metric_card(
+                "Connections",
+                &state.connections.rows.len().to_string(),
+                "Active",
+            ),
+        ))
+        .spacing(12.0),
+        toolbar(hstack((
+            button(confirm_label(
+                safety,
+                "close-all-connections",
+                "Close all",
+                "Confirm close all",
+            ))
+            .icon(SymbolGlyph::Delete)
+            .on_click({
+                let safety = safety.clone();
+                let set_connections = state.set_connections.clone();
+                let set_overview = state.set_overview.clone();
+                move || {
+                    guarded_action(&safety, "close-all-connections", || {
+                        let set_connections = set_connections.clone();
+                        let set_overview = set_overview.clone();
+                        std::thread::spawn(move || {
+                            reactor_close_all_connections_text();
+                            set_connections.call(load_connections_snapshot());
+                            let mut snapshot = load_overview_snapshot();
+                            let (up, down) = load_traffic_speed();
+                            snapshot.upload_speed = up;
+                            snapshot.download_speed = down;
+                            set_overview.call(snapshot);
+                        });
+                    });
+                }
+            })
+            .subtle(),
+            text_box(&state.connections_filter)
+                .placeholder("Search host, ASN, process…")
+                .on_changed({
+                    let set_connections_filter = state.set_connections_filter.clone();
+                    let set_connection_selected = state.set_connection_selected.clone();
+                    move |value| {
+                        set_connections_filter.call(value);
+                        set_connection_selected.call(-1);
+                    }
+                })
+                .width(320.0),
+        ))
+        .spacing(8.0)),
+        connections_master_detail(state, safety, &visible, selected.as_ref()),
+    ))
+    .spacing(14.0)
+    .into()
+}
+
+fn connections_master_detail(
+    state: &DashboardState,
+    safety: &SafetyState,
+    visible: &[&ConnectionRow],
+    selected: Option<&ConnectionRow>,
+) -> Element {
+    if visible.is_empty() {
+        return design_empty_state(
+            "No active connections",
+            if state.connections.message.is_empty() {
+                "Once the core is running and traffic is flowing, sessions will appear here."
+                    .to_owned()
+            } else {
+                state.connections.message.clone()
+            },
+            None,
+        );
+    }
+    let labels: Vec<String> = visible
+        .iter()
+        .take(200)
+        .map(|c| {
+            let host = if c.host.is_empty() {
+                "—"
+            } else {
+                c.host.as_str()
+            };
+            format!("{host}  ·  {}  ·  {}", c.network, c.process)
+        })
+        .collect();
+    let master = border(
+        scroll_view(
+            list_box()
+                .items(labels)
+                .selected_index(state.connection_selected)
+                .on_selection_changed({
+                    let set_connection_selected = state.set_connection_selected.clone();
+                    move |index| set_connection_selected.call(index)
+                }),
+        )
+        .height(420.0),
+    )
+    .padding(Thickness::uniform(6.0))
+    .corner_radius(8.0)
+    .background(tokens::ControlFill)
+    .border_brush(tokens::CardStroke)
+    .border_thickness(Thickness::uniform(1.0))
+    .width(360.0);
+
+    let detail: Element = match selected {
+        None => design_empty_state(
+            "Select a connection",
+            "Pick a row from the list to inspect its host, rule chain, and live throughput.",
+            None,
+        ),
+        Some(c) => connection_detail(c, state, safety),
+    };
+    hstack((master, detail)).spacing(12.0).into()
+}
+
+fn connection_detail(
+    c: &ConnectionRow,
+    state: &DashboardState,
+    safety: &SafetyState,
+) -> Element {
+    let host_label = if c.host.is_empty() {
+        "Unknown host".to_owned()
+    } else {
+        c.host.clone()
+    };
+    section(
+        "Connection detail",
+        None,
+        vstack((
+            text_block(host_label).font_size(18.0).bold(),
+            text_block(format!(
+                "{} · {} · {}",
+                c.network,
+                if c.process.is_empty() {
+                    "no process"
+                } else {
+                    c.process.as_str()
+                },
+                if c.asn.is_empty() { "—" } else { c.asn.as_str() }
+            ))
+            .font_size(12.0)
+            .foreground(tokens::SecondaryText),
+            detail_row("Rule", &c.rule),
+            detail_row("Chain", &c.chains),
+            detail_row("Upload", &c.upload),
+            detail_row("Download", &c.download),
+            detail_row("Duration", &c.duration),
+            detail_row("ID", &c.id),
+            hstack((
+                button(confirm_label(
+                    safety,
+                    "close-one-connection",
+                    "Close connection",
+                    "Confirm close",
+                ))
+                .icon(SymbolGlyph::Cancel)
+                .on_click({
+                    let safety = safety.clone();
+                    let id = c.id.clone();
+                    let set_connections = state.set_connections.clone();
+                    let set_overview = state.set_overview.clone();
+                    let set_connection_selected = state.set_connection_selected.clone();
+                    move || {
+                        guarded_action(&safety, "close-one-connection", || {
+                            let id = id.clone();
+                            let set_connections = set_connections.clone();
+                            let set_overview = set_overview.clone();
+                            std::thread::spawn(move || {
+                                if !id.is_empty() && is_plausible_connection_id(&id) {
+                                    reactor_close_connection_text(&id);
+                                }
+                                set_connections.call(load_connections_snapshot());
+                                let mut snapshot = load_overview_snapshot();
+                                let (up, down) = load_traffic_speed();
+                                snapshot.upload_speed = up;
+                                snapshot.download_speed = down;
+                                set_overview.call(snapshot);
+                            });
+                        });
+                        set_connection_selected.call(-1);
+                    }
+                })
+                .subtle(),
+            ))
+            .spacing(8.0),
+        ))
+        .spacing(10.0),
+    )
+}
+
+fn detail_row(label: &str, value: &str) -> Element {
+    let display = if value.is_empty() { "—" } else { value };
+    hstack((
+        text_block(label.to_owned())
+            .font_size(12.0)
+            .bold()
+            .foreground(tokens::SecondaryText)
+            .width(96.0),
+        text_block(display.to_owned()).font_size(13.0),
+    ))
+    .spacing(8.0)
+    .into()
+}
+
+pub(crate) fn flows_page(state: &DashboardState) -> Element {
+    let rows = visible_flow_rows(state);
+    let (upload_total, download_total, connections_total) = flow_totals(&rows);
+    let active_count = rows.iter().filter(|row| !row.closed).count();
+    let closed_count = rows.iter().filter(|row| row.closed).count();
+    let top_destination = rows
+        .iter()
+        .max_by(|left, right| left.bytes.cmp(&right.bytes))
+        .map(|row| row.destination.clone())
+        .unwrap_or_else(|| "-".to_owned());
+    vstack((
+        hstack((
+            metric_card("Top destination", &top_destination, "By bytes"),
+            metric_card("Upload", &format_bytes_approx(upload_total), "Cumulative"),
+            metric_card("Download", &format_bytes_approx(download_total), "Cumulative"),
+            metric_card("Connections", &connections_total.to_string(), "Tracked"),
+            metric_card("Active", &active_count.to_string(), "Flows"),
+            metric_card("Closed", &closed_count.to_string(), "Flows"),
+        ))
+        .spacing(12.0),
+        toolbar(hstack((
+            status_pill(
+                state.flows_status.as_str(),
+                Tone::from_ok(state.flows_status == "Connected"),
+            ),
+            ToggleSwitch::new(state.flows_include_closed)
+                .on_content("Include closed")
+                .off_content("Active only")
+                .on_changed({
+                    let set_flows_include_closed = state.set_flows_include_closed.clone();
+                    move |value| set_flows_include_closed.call(value)
+                }),
+            ComboBox::new(["bytes", "upload", "download", "connections"])
+                .placeholder("Sort by")
+                .selected_index(choice_index(
+                    &state.flows_sort,
+                    &["bytes", "upload", "download", "connections"],
+                ))
+                .on_selection_changed({
+                    let set_flows_sort = state.set_flows_sort.clone();
+                    move |index| {
+                        set_choice(
+                            index,
+                            &["bytes", "upload", "download", "connections"],
+                            &set_flows_sort,
+                        )
+                    }
+                })
+                .width(160.0),
+            ComboBox::new(["all", "tcp", "udp", "quic"])
+                .placeholder("Protocol")
+                .selected_index(choice_index(
+                    &state.flows_protocol,
+                    &["all", "tcp", "udp", "quic"],
+                ))
+                .on_selection_changed({
+                    let set_flows_protocol = state.set_flows_protocol.clone();
+                    move |index| {
+                        set_choice(index, &["all", "tcp", "udp", "quic"], &set_flows_protocol)
+                    }
+                })
+                .width(120.0),
+            text_box(&state.flows_filter)
+                .placeholder("Search destination…")
+                .on_changed({
+                    let set_flows_filter = state.set_flows_filter.clone();
+                    move |value| set_flows_filter.call(value)
+                })
+                .width(240.0),
+        ))
+        .spacing(8.0)),
+        flow_graph_panel(&rows),
+        flow_table(&rows),
+    ))
+    .spacing(14.0)
+    .into()
+}
+
+pub(crate) fn dns_page(state: &DashboardState) -> Element {
+    vstack((
+        toolbar(hstack((
+            text_box(&state.dns_name)
+                .placeholder("Hostname (example.com)")
+                .on_changed({
+                    let set_dns_name = state.set_dns_name.clone();
+                    move |value| set_dns_name.call(value)
+                })
+                .width(320.0),
+            ComboBox::new(["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA"])
+                .placeholder("Type")
+                .selected_index(choice_index(
+                    &state.dns_type,
+                    &["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA"],
+                ))
+                .on_selection_changed({
+                    let set_dns_type = state.set_dns_type.clone();
+                    move |index| {
+                        set_choice(
+                            index,
+                            &["A", "AAAA", "CNAME", "MX", "TXT", "NS", "SOA"],
+                            &set_dns_type,
+                        )
+                    }
+                })
+                .width(120.0),
+            button("Query")
+                .icon(SymbolGlyph::Find)
+                .on_click({
+                    let set_dns = state.set_dns.clone();
+                    let dns_name = state.dns_name.clone();
+                    let dns_type = state.dns_type.clone();
+                    move || {
+                        let set_dns = set_dns.clone();
+                        let dns_name = dns_name.clone();
+                        let dns_type = dns_type.clone();
+                        std::thread::spawn(move || {
+                            set_dns.call(load_dns_snapshot(&dns_name, &dns_type));
+                        });
+                    }
+                })
+                .accent(),
+        ))
+        .spacing(8.0)),
+        section(
+            "Resolved answers",
+            Some("Results from the controller's DNS resolver."),
+            dns_table(&state.dns),
+        ),
+    ))
+    .spacing(14.0)
+    .into()
+}
+
+pub(crate) fn logs_page(state: &DashboardState) -> Element {
+    let visible_logs = filtered_logs(&state.logs_lines, &state.logs_level_filter);
+    vstack((
+        toolbar(hstack((
+            status_pill(
+                state.logs_status.as_str(),
+                Tone::from_ok(
+                    state.logs_status == "Connected" || state.logs_status == "Paused",
+                ),
+            ),
+            ComboBox::new(["all", "debug", "info", "warning", "error"])
+                .placeholder("Level")
+                .selected_index(choice_index(
+                    &state.logs_level_filter,
+                    &["all", "debug", "info", "warning", "error"],
+                ))
+                .on_selection_changed({
+                    let set_logs_level_filter = state.set_logs_level_filter.clone();
+                    move |index| {
+                        set_choice(
+                            index,
+                            &["all", "debug", "info", "warning", "error"],
+                            &set_logs_level_filter,
+                        )
+                    }
+                })
+                .width(140.0),
+            ToggleSwitch::new(state.logs_paused)
+                .on_content("Paused")
+                .off_content("Live")
+                .on_changed({
+                    let set_logs_paused = state.set_logs_paused.clone();
+                    move |value| set_logs_paused.call(value)
+                }),
+            button("Clear")
+                .icon(SymbolGlyph::Delete)
+                .on_click({
+                    let set_logs_lines = state.set_logs_lines.clone();
+                    move || clear_logs_buffer(set_logs_lines.clone())
+                })
+                .subtle(),
+        ))
+        .spacing(10.0)),
+        log_table(&visible_logs),
+    ))
+    .spacing(14.0)
+    .into()
+}
+
+fn rules_table(snapshot: &RulesSnapshot, filter: &str) -> Element {
+    if snapshot.rows.is_empty() {
+        return design_empty_state(
+            "No rules loaded",
+            if snapshot.message.is_empty() {
+                "Activate a profile to see its routing rules here.".to_owned()
+            } else {
+                snapshot.message.clone()
+            },
+            None,
+        );
+    }
+    let mut rows = vec![table_header(vec!["Type", "Payload", "Proxy"])];
+    let visible = snapshot
+        .rows
+        .iter()
+        .filter(|rule| matches_filter(filter, &[&rule.rule_type, &rule.payload, &rule.proxy]))
+        .collect::<Vec<_>>();
+    if visible.is_empty() {
+        rows.push(empty_row("No rules match the current search."));
+    } else {
+        for rule in visible.iter().take(120) {
+            rows.push(table_row(vec![
+                rule.rule_type.clone(),
+                rule.payload.clone(),
+                rule.proxy.clone(),
+            ]));
+        }
+        rows.push(count_row(visible.len(), snapshot.rows.len(), 120));
+    }
+    table_panel(rows)
+}
+
+fn dns_table(snapshot: &DnsSnapshot) -> Element {
+    let mut rows = vec![table_header(vec!["Name", "Type", "TTL", "Data"])];
+    if snapshot.rows.is_empty() {
+        rows.push(empty_row(&snapshot.message));
+    } else {
+        for answer in &snapshot.rows {
+            rows.push(table_row(vec![
+                answer.name.clone(),
+                answer.record_type.clone(),
+                answer.ttl.clone(),
+                answer.data.clone(),
+            ]));
+        }
+    }
+    table_panel(rows)
+}
+
+fn table_panel(rows: Vec<Element>) -> Element {
+    border(scroll_view(vstack(rows).spacing(2.0)).height(360.0))
+        .padding(Thickness::uniform(10.0))
+        .corner_radius(8.0)
+        .background(tokens::ControlFill)
+        .border_brush(tokens::CardStroke)
+        .border_thickness(Thickness::uniform(1.0))
+        .into()
+}
+
+fn table_header(columns: Vec<&'static str>) -> Element {
+    hstack(
+        columns
+            .into_iter()
+            .map(|column| {
+                text_block(column)
+                    .font_size(12.0)
+                    .bold()
+                    .foreground(tokens::SecondaryText)
+                    .width(130.0)
+                    .into()
+            })
+            .collect::<Vec<Element>>(),
+    )
+    .spacing(8.0)
+    .into()
+}
+
+fn table_header_cols(columns: &[(&'static str, f64)]) -> Element {
+    hstack(
+        columns
+            .iter()
+            .map(|(label, width)| {
+                text_block(*label)
+                    .font_size(12.0)
+                    .bold()
+                    .foreground(tokens::SecondaryText)
+                    .width(*width)
+                    .into()
+            })
+            .collect::<Vec<Element>>(),
+    )
+    .spacing(8.0)
+    .into()
+}
+
+fn table_row(columns: Vec<String>) -> Element {
+    hstack(
+        columns
+            .into_iter()
+            .map(|column| {
+                text_block(truncate_cell(&column))
+                    .font_size(13.0)
+                    .width(130.0)
+                    .into()
+            })
+            .collect::<Vec<Element>>(),
+    )
+    .spacing(8.0)
+    .into()
+}
+
+fn table_row_cols(columns: Vec<(String, f64)>) -> Element {
+    hstack(
+        columns
+            .into_iter()
+            .map(|(value, width)| {
+                text_block(truncate_cell(&value))
+                    .font_size(13.0)
+                    .width(width)
+                    .into()
+            })
+            .collect::<Vec<Element>>(),
+    )
+    .spacing(8.0)
+    .into()
+}
+
+fn empty_row(message: &str) -> Element {
+    border(
+        text_block(message.to_owned())
+            .font_size(13.0)
+            .foreground(tokens::SecondaryText),
+    )
+    .padding(Thickness::uniform(12.0))
+    .corner_radius(8.0)
+    .background(tokens::SubtleFill)
+    .into()
+}
+
+fn count_row(visible: usize, total: usize, cap: usize) -> Element {
+    let capped = visible.min(cap);
+    empty_row(&format!(
+        "Showing {capped} of {visible} matching rows ({total} total)."
+    ))
+}
+
+fn panel(title: &'static str, content: impl Into<Element>) -> Element {
+    section(title, None, content)
+}
+
+fn matches_filter(filter: &str, values: &[&str]) -> bool {
+    let filter = filter.trim().to_ascii_lowercase();
+    filter.is_empty()
+        || values
+            .iter()
+            .any(|value| value.to_ascii_lowercase().contains(&filter))
+}
+
+fn proxy_items(snapshot: &ProxySnapshot) -> Vec<String> {
+    let mut items = snapshot
+        .rows
+        .iter()
+        .map(|row| row.name.clone())
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        items.push("DIRECT".to_owned());
+    }
+    items
+}
+
+fn proxy_provider_items(snapshot: &ProviderSnapshot) -> Vec<String> {
+    let mut items = snapshot
+        .rows
+        .iter()
+        .filter(|row| row.scope.eq_ignore_ascii_case("proxy"))
+        .map(|row| row.name.clone())
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        items.push("default".to_owned());
+    }
+    items
+}
+
+fn rule_provider_items(snapshot: &ProviderSnapshot) -> Vec<String> {
+    let mut items = snapshot
+        .rows
+        .iter()
+        .filter(|row| row.scope.eq_ignore_ascii_case("rule"))
+        .map(|row| row.name.clone())
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        items.push("default".to_owned());
+    }
+    items
+}
+
+fn is_plausible_connection_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn choice_index_owned(value: &str, choices: &[String]) -> i32 {
+    choices
+        .iter()
+        .position(|choice| choice.eq_ignore_ascii_case(value.trim()))
+        .map(|index| index as i32)
+        .unwrap_or(-1)
+}
+
+fn set_choice_owned(index: i32, choices: &[String], setter: &SetState<String>) {
+    if let Some(choice) = choices.get(index.max(0) as usize) {
+        setter.call(choice.clone());
+    }
+}
+
+fn truncate_cell(value: &str) -> String {
+    const MAX_CHARS: usize = 34;
+    let mut output = value.chars().take(MAX_CHARS).collect::<String>();
+    if value.chars().count() > MAX_CHARS {
+        output.push_str("...");
+    }
+    output
+}
+
+fn choice_index(value: &str, choices: &[&str]) -> i32 {
+    choices
+        .iter()
+        .position(|choice| choice.eq_ignore_ascii_case(value.trim()))
+        .map(|index| index as i32)
+        .unwrap_or(-1)
+}
+
+fn set_choice(index: i32, choices: &[&str], setter: &SetState<String>) {
+    if let Some(choice) = choices.get(index.max(0) as usize) {
+        setter.call((*choice).to_owned());
+    }
+}
+
+fn effective_str<'a>(local: &'a str, snapshot: &'a str) -> &'a str {
+    if local.is_empty() {
+        let trimmed = snapshot.trim();
+        if trimmed == "-" || trimmed.is_empty() { "" } else { snapshot }
+    } else {
+        local
+    }
+}
+
+fn config_editor(state: &DashboardState) -> Element {
+    let mode = effective_str(&state.config_mode, &state.overview.mode).to_owned();
+    let log_level = effective_str(&state.config_log_level, &state.overview.log_level).to_owned();
+    let mixed_port = effective_str(&state.config_mixed_port, &state.overview.mixed_port).to_owned();
+    let bind_address = state.config_bind_address.clone();
+    vstack((
+        hstack((
+            RadioButtons::new(["Rule", "Global", "Direct"])
+                .header("Mode")
+                .selected_index(choice_index(&mode, &["rule", "global", "direct"]))
+                .max_columns(3)
+                .on_selection_changed({
+                    let set_config_mode = state.set_config_mode.clone();
+                    move |index| set_choice(index, &["rule", "global", "direct"], &set_config_mode)
+                })
+                .width(360.0),
+            ComboBox::new(["info", "warning", "error", "debug", "trace", "silent"])
+                .header("Log level")
+                .placeholder("Log level")
+                .selected_index(choice_index(
+                    &log_level,
+                    &["info", "warning", "error", "debug", "trace", "silent"],
+                ))
+                .on_selection_changed({
+                    let set_config_log_level = state.set_config_log_level.clone();
+                    move |index| {
+                        set_choice(
+                            index,
+                            &["info", "warning", "error", "debug", "trace", "silent"],
+                            &set_config_log_level,
+                        )
+                    }
+                })
+                .width(180.0),
+        ))
+        .spacing(14.0),
+        hstack((
+            text_box(&mixed_port)
+                .header("Mixed port")
+                .placeholder("7890")
+                .on_changed({
+                    let set_config_mixed_port = state.set_config_mixed_port.clone();
+                    move |value| set_config_mixed_port.call(value)
+                })
+                .width(140.0),
+            text_box(&bind_address)
+                .header("Bind address")
+                .placeholder("*")
+                .on_changed({
+                    let set_config_bind_address = state.set_config_bind_address.clone();
+                    move |value| set_config_bind_address.call(value)
+                })
+                .width(180.0),
+        ))
+        .spacing(8.0),
+    ))
+    .spacing(10.0)
+    .into()
+}
+
+
+fn parse_on_off(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "yes" | "1" => Some(true),
+        "off" | "false" | "no" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn config_actions(state: &DashboardState, safety: &SafetyState, toasts: &ToastQueue) -> Element {
+    let snapshot_allow_lan = parse_on_off(&state.overview.allow_lan);
+    let snapshot_ipv6 = parse_on_off(&state.overview.ipv6);
+    let effective_allow_lan = if state.config_allow_lan_dirty {
+        state.config_allow_lan
+    } else {
+        snapshot_allow_lan.unwrap_or(state.config_allow_lan)
+    };
+    let effective_ipv6 = if state.config_ipv6_dirty {
+        state.config_ipv6
+    } else {
+        snapshot_ipv6.unwrap_or(state.config_ipv6)
+    };
+    let patch_mode = effective_str(&state.config_mode, &state.overview.mode).to_owned();
+    let patch_log_level = effective_str(&state.config_log_level, &state.overview.log_level).to_owned();
+    let patch_mixed_port = effective_str(&state.config_mixed_port, &state.overview.mixed_port).to_owned();
+    let patch_bind_address = state.config_bind_address.clone();
+    vstack((
+        hstack((
+            ToggleSwitch::new(effective_allow_lan)
+                .header("Allow LAN")
+                .on_content("On")
+                .off_content("Off")
+                .on_changed({
+                    let set_config_allow_lan = state.set_config_allow_lan.clone();
+                    let set_config_allow_lan_dirty = state.set_config_allow_lan_dirty.clone();
+                    move |value| {
+                        set_config_allow_lan.call(value);
+                        set_config_allow_lan_dirty.call(true);
+                    }
+                }),
+            ToggleSwitch::new(effective_ipv6)
+                .header("IPv6")
+                .on_content("On")
+                .off_content("Off")
+                .on_changed({
+                    let set_config_ipv6 = state.set_config_ipv6.clone();
+                    let set_config_ipv6_dirty = state.set_config_ipv6_dirty.clone();
+                    move |value| {
+                        set_config_ipv6.call(value);
+                        set_config_ipv6_dirty.call(true);
+                    }
+                }),
+            button(confirm_label(
+                safety,
+                "patch-runtime-config",
+                "Patch Configs",
+                "Confirm Patch",
+            ))
+            .on_click({
+                let safety = safety.clone();
+                let mode = patch_mode;
+                let log_level = patch_log_level;
+                let mixed_port = patch_mixed_port;
+                let bind_address = patch_bind_address;
+                let allow_lan = effective_allow_lan;
+                let ipv6 = effective_ipv6;
+                let set_overview = state.set_overview.clone();
+                let set_action_busy = state.set_action_busy.clone();
+                let toasts = toasts.clone();
+                move || {
+                    guarded_action(&safety, "patch-runtime-config", || {
+                        spawn_action(
+                            set_action_busy.clone(),
+                            set_overview.clone(),
+                            toasts.clone(),
+                            "Configs patched",
+                            {
+                                let mode = mode.clone();
+                                let log_level = log_level.clone();
+                                let mixed_port = mixed_port.clone();
+                                let bind_address = bind_address.clone();
+                                move || {
+                                    reactor_patch_configs_text(
+                                        &mode,
+                                        &log_level,
+                                        &mixed_port,
+                                        &bind_address,
+                                        allow_lan,
+                                        ipv6,
+                                    )
+                                }
+                            },
+                        );
+                    });
+                }
+            })
+            .accent(),
+        ))
+        .spacing(12.0),
+        hstack((
+            text_box(&state.config_reload_path)
+                .header("Reload path")
+                .placeholder(r"C:\path\config.yaml")
+                .on_changed({
+                    let set_config_reload_path = state.set_config_reload_path.clone();
+                    move |value| set_config_reload_path.call(value)
+                })
+                .width(360.0),
+            button("Browse")
+                .icon(SymbolGlyph::Find)
+                .on_click({
+                    let set_config_reload_path = state.set_config_reload_path.clone();
+                    move || {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("YAML", &["yaml", "yml"])
+                            .pick_file()
+                        {
+                            set_config_reload_path.call(path.display().to_string());
+                        }
+                    }
+                })
+                .subtle(),
+            button(confirm_label(
+                safety,
+                "reload-runtime-config",
+                "Reload Configs",
+                "Confirm Reload",
+            ))
+            .on_click({
+                let safety = safety.clone();
+                let config_reload_path = state.config_reload_path.clone();
+                let set_overview = state.set_overview.clone();
+                let set_action_busy = state.set_action_busy.clone();
+                let toasts = toasts.clone();
+                move || {
+                    guarded_action(&safety, "reload-runtime-config", || {
+                        let path = config_reload_path.clone();
+                        spawn_action(
+                            set_action_busy.clone(),
+                            set_overview.clone(),
+                            toasts.clone(),
+                            "Configs reloaded",
+                            move || reactor_reload_configs_text(&path),
+                        );
+                    });
+                }
+            })
+            .subtle(),
+        ))
+        .spacing(8.0),
+    ))
+    .spacing(8.0)
+    .into()
+}
+
+#[derive(Clone)]
+struct FlowRowView {
+    destination: String,
+    protocol: String,
+    connections: u64,
+    upload: u64,
+    download: u64,
+    bytes: u64,
+    closed: bool,
+}
+
+fn visible_flow_rows(state: &DashboardState) -> Vec<FlowRowView> {
+    let mut rows = parse_flow_rows(&state.flows_lines)
+        .into_iter()
+        .filter(|row| {
+            let protocol_ok = state.flows_protocol.eq_ignore_ascii_case("all")
+                || row
+                    .protocol
+                    .eq_ignore_ascii_case(state.flows_protocol.trim());
+            let closed_ok = state.flows_include_closed || !row.closed;
+            let filter_ok = state.flows_filter.trim().is_empty()
+                || row
+                    .destination
+                    .to_ascii_lowercase()
+                    .contains(&state.flows_filter.trim().to_ascii_lowercase());
+            protocol_ok && closed_ok && filter_ok
+        })
+        .collect::<Vec<_>>();
+
+    match state.flows_sort.trim().to_ascii_lowercase().as_str() {
+        "upload" => rows.sort_by(|left, right| right.upload.cmp(&left.upload)),
+        "download" => rows.sort_by(|left, right| right.download.cmp(&left.download)),
+        "connections" => rows.sort_by(|left, right| right.connections.cmp(&left.connections)),
+        _ => rows.sort_by(|left, right| right.bytes.cmp(&left.bytes)),
+    }
+    rows
+}
+
+fn parse_flow_rows(lines: &[String]) -> Vec<FlowRowView> {
+    let mut rows = Vec::new();
+    for line in lines {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(array) = value.get("flows").and_then(serde_json::Value::as_array) {
+                for item in array {
+                    rows.push(flow_row_from_json(item));
+                }
+                continue;
+            }
+            if let Some(array) = value.as_array() {
+                for item in array {
+                    rows.push(flow_row_from_json(item));
+                }
+                continue;
+            }
+            rows.push(flow_row_from_json(&value));
+        }
+    }
+    rows
+}
+
+fn flow_row_from_json(value: &serde_json::Value) -> FlowRowView {
+    let destination = value
+        .get("destination")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("host").and_then(serde_json::Value::as_str))
+        .unwrap_or("-")
+        .to_owned();
+    let protocol = value
+        .get("protocol")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("network").and_then(serde_json::Value::as_str))
+        .unwrap_or("-")
+        .to_owned();
+    let connections = value
+        .get("connections")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| value.get("count").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0);
+    let upload = value
+        .get("upload")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| value.get("up").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0);
+    let download = value
+        .get("download")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| value.get("down").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0);
+    let bytes = value
+        .get("bytes")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(upload.saturating_add(download));
+    let closed = value
+        .get("closed")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    FlowRowView {
+        destination,
+        protocol,
+        connections,
+        upload,
+        download,
+        bytes,
+        closed,
+    }
+}
+
+fn flow_totals(rows: &[FlowRowView]) -> (u64, u64, u64) {
+    rows.iter()
+        .fold((0_u64, 0_u64, 0_u64), |(up, down, conns), row| {
+            (
+                up.saturating_add(row.upload),
+                down.saturating_add(row.download),
+                conns.saturating_add(row.connections),
+            )
+        })
+}
+
+fn flow_table(rows: &[FlowRowView]) -> Element {
+    let mut table_rows = vec![table_header(vec![
+        "Destination",
+        "Protocol",
+        "Connections",
+        "Upload",
+        "Download",
+        "Bytes",
+        "Closed",
+    ])];
+    if rows.is_empty() {
+        table_rows.push(empty_row("No flow rows match the current filters."));
+    } else {
+        for row in rows.iter().take(120) {
+            table_rows.push(table_row(vec![
+                row.destination.clone(),
+                row.protocol.clone(),
+                row.connections.to_string(),
+                format_bytes_approx(row.upload),
+                format_bytes_approx(row.download),
+                format_bytes_approx(row.bytes),
+                if row.closed {
+                    "yes".to_owned()
+                } else {
+                    "no".to_owned()
+                },
+            ]));
+        }
+        table_rows.push(count_row(rows.len(), rows.len(), 120));
+    }
+    table_panel(table_rows)
+}
+
+fn flow_graph_panel(rows: &[FlowRowView]) -> Element {
+    let top = rows.iter().take(8).collect::<Vec<_>>();
+    let max_bytes = top.iter().map(|row| row.bytes).max().unwrap_or(1);
+    let mut lines = Vec::new();
+    if top.is_empty() {
+        lines.push("No flow data for graph.".to_owned());
+    } else {
+        for row in top {
+            let width = ((row.bytes as f64 / max_bytes as f64) * 20.0).round() as usize;
+            let bar = "#".repeat(width.max(1));
+            lines.push(format!(
+                "{:<18} {:<20} {}",
+                truncate_cell(&row.destination),
+                bar,
+                format_bytes_approx(row.bytes)
+            ));
+        }
+    }
+
+    panel(
+        "Flow graph (table-first)",
+        scroll_view(
+            vstack(
+                lines
+                    .into_iter()
+                    .map(|line| text_block(line).font_size(12.0).into())
+                    .collect::<Vec<Element>>(),
+            )
+            .spacing(4.0),
+        )
+        .height(140.0),
+    )
+}
+
+fn filtered_logs(lines: &[String], level: &str) -> Vec<String> {
+    let level = level.trim().to_ascii_lowercase();
+    if level.is_empty() || level == "all" {
+        return lines.to_vec();
+    }
+    lines
+        .iter()
+        .filter(|line| line.to_ascii_lowercase().contains(&level))
+        .cloned()
+        .collect::<Vec<_>>()
+}
+
+fn parse_log_line(line: &str) -> (String, String) {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+        let level = value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("-")
+            .to_owned();
+        let payload = value
+            .get("payload")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(line)
+            .to_owned();
+        (level, payload)
+    } else {
+        ("-".to_owned(), line.to_owned())
+    }
+}
+
+fn level_tone(level: &str) -> (ThemeRef, &'static str) {
+    let lower = level.to_ascii_lowercase();
+    match lower.as_str() {
+        "info" => (tokens::SystemSuccess, "INFO"),
+        "warning" | "warn" => (tokens::SystemAttention, "WARN"),
+        "error" | "err" => (tokens::SystemCritical, "ERROR"),
+        "debug" => (tokens::SecondaryText, "DEBUG"),
+        "trace" => (tokens::TertiaryText, "TRACE"),
+        _ => (tokens::TertiaryText, "—"),
+    }
+}
+
+fn log_row(line: &str) -> Element {
+    let (level, message) = parse_log_line(line);
+    let (color, label) = level_tone(&level);
+    let stripe = border(Element::Empty)
+        .background(color.clone())
+        .width(3.0);
+    let body = border(
+        hstack((
+            text_block(label.to_owned())
+                .font_size(11.0)
+                .bold()
+                .foreground(color)
+                .width(56.0),
+            text_block(message).font_size(13.0),
+        ))
+        .spacing(10.0),
+    )
+    .padding(Thickness::xy(10.0, 6.0))
+    .background(tokens::SubtleFill);
+    hstack((stripe, body)).spacing(0.0).into()
+}
+
+fn log_table(lines: &[String]) -> Element {
+    if lines.is_empty() {
+        return design_empty_state(
+            "Logs are quiet",
+            "No log entries collected yet. Start the core or refresh logs to begin streaming.",
+            None,
+        );
+    }
+    let rows: Vec<Element> = lines
+        .iter()
+        .rev()
+        .take(300)
+        .map(|line| log_row(line))
+        .collect();
+    border(scroll_view(vstack(rows).spacing(2.0)).height(420.0))
+        .padding(Thickness::uniform(8.0))
+        .corner_radius(8.0)
+        .background(tokens::ControlFill)
+        .border_brush(tokens::CardStroke)
+        .border_thickness(Thickness::uniform(1.0))
+        .into()
+}
+
+fn trim_tail(mut lines: Vec<String>, max_items: usize) -> Vec<String> {
+    if lines.len() > max_items {
+        let drain = lines.len() - max_items;
+        lines.drain(0..drain);
+    }
+    lines
+}
+
+fn format_bytes_approx(value: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if value >= GIB {
+        format!("{:.2} GiB", value as f64 / GIB as f64)
+    } else if value >= MIB {
+        format!("{:.1} MiB", value as f64 / MIB as f64)
+    } else if value >= KIB {
+        format!("{:.1} KiB", value as f64 / KIB as f64)
+    } else {
+        format!("{value} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{filtered_logs, parse_flow_rows, trim_tail};
+
+    #[test]
+    fn trim_tail_keeps_recent_entries() {
+        let items = vec![
+            "one".to_owned(),
+            "two".to_owned(),
+            "three".to_owned(),
+            "four".to_owned(),
+        ];
+        let trimmed = trim_tail(items, 2);
+        assert_eq!(trimmed, vec!["three".to_owned(), "four".to_owned()]);
+    }
+
+    #[test]
+    fn filtered_logs_respects_level() {
+        let logs = vec![
+            "[info] connected".to_owned(),
+            "[warning] timeout".to_owned(),
+            "[error] down".to_owned(),
+        ];
+        let warnings = filtered_logs(&logs, "warning");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("warning"));
+    }
+
+    #[test]
+    fn parse_flow_rows_reads_json_entries() {
+        let lines = vec![
+            r#"{"destination":"example.com","protocol":"tcp","connections":2,"upload":1024,"download":2048}"#
+                .to_owned(),
+        ];
+        let rows = parse_flow_rows(&lines);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].destination, "example.com");
+        assert_eq!(rows[0].connections, 2);
+    }
+}

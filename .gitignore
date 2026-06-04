@@ -1,0 +1,37 @@
+# Rust build output
+/target/
+
+# windows-reactor generated staging folders
+/temp/
+/winmd/
+
+# Local development runtime assets, downloaded cores, and generated configs
+/.dev/
+
+# Packaged release output (produced by scripts/package-portable.ps1)
+/dist/
+
+# Ad-hoc test/diagnostic output captured to disk
+test_out.txt
+
+# Logs and crash dumps
+*.log
+*.dmp
+*.pdb
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Windows shortcut/zone metadata side files
+*.lnk
+*.Zone.Identifier
