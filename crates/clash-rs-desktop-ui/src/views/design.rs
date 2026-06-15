@@ -13,14 +13,23 @@ use windows_reactor::*;
 // Type scale
 // ---------------------------------------------------------------------------
 //
-// One scale used everywhere. Don't pick arbitrary `font_size` values in pages.
+// One scale used everywhere, aligned to the WinUI 3 type ramp the framework
+// renders natively (title 28 / subtitle 20 / body 14 / caption 12). Don't pick
+// arbitrary `font_size` values in pages — reach for one of these.
 
 pub(crate) mod type_scale {
-    pub(crate) const SUBTITLE: f64 = 16.0;
-    pub(crate) const BODY_STRONG: f64 = 14.0;
-    pub(crate) const BODY: f64 = 13.0;
-    pub(crate) const CAPTION: f64 = 12.0;
+    /// The single largest element on a page — the Overview status word.
+    pub(crate) const HERO: f64 = 28.0;
+    /// Big numeric readouts (metric cards).
     pub(crate) const METRIC: f64 = 22.0;
+    /// Section and card titles.
+    pub(crate) const TITLE: f64 = 20.0;
+    /// Emphasised body (row titles, list emphasis).
+    pub(crate) const BODY_STRONG: f64 = 14.0;
+    /// Default body text.
+    pub(crate) const BODY: f64 = 14.0;
+    /// Secondary/supporting text, table cells, captions.
+    pub(crate) const CAPTION: f64 = 12.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -31,9 +40,29 @@ pub(crate) mod spacing {
     pub(crate) const XS: f64 = 4.0;
     pub(crate) const SM: f64 = 8.0;
     pub(crate) const MD: f64 = 12.0;
+    /// The ubiquitous "between sections" gap that used to be hardcoded as 14.
+    pub(crate) const MD_LG: f64 = 14.0;
     pub(crate) const LG: f64 = 16.0;
+    /// Card padding.
+    pub(crate) const XL: f64 = 20.0;
     pub(crate) const XXL: f64 = 24.0;
 }
+
+// ---------------------------------------------------------------------------
+// Corner-radius scale — one set of radii so adjacent surfaces match
+// ---------------------------------------------------------------------------
+
+pub(crate) mod radius {
+    /// Inset rows and small controls.
+    pub(crate) const SM: f64 = 6.0;
+    /// The default card/section/toolbar radius.
+    pub(crate) const MD: f64 = 8.0;
+    /// Prominent surfaces (the hero).
+    pub(crate) const LG: f64 = 10.0;
+}
+
+/// Standard hairline border thickness for every card surface.
+pub(crate) const HAIRLINE: f64 = 1.0;
 
 // ---------------------------------------------------------------------------
 // Section card — title + optional subtitle + content
@@ -46,8 +75,8 @@ pub(crate) fn section(
 ) -> Element {
     let mut header_children: Vec<Element> = vec![
         text_block(title.into())
-            .font_size(type_scale::SUBTITLE)
-            .bold()
+            .font_size(type_scale::TITLE)
+            .semibold()
             .into(),
     ];
     if let Some(sub) = subtitle {
@@ -62,11 +91,11 @@ pub(crate) fn section(
         vstack((vstack(header_children).spacing(spacing::XS), content.into()))
             .spacing(spacing::MD),
     )
-    .padding(Thickness::uniform(spacing::LG))
-    .corner_radius(8.0)
+    .padding(Thickness::uniform(spacing::XL))
+    .corner_radius(radius::MD)
     .background(tokens::CardBackground)
     .border_brush(tokens::CardStroke)
-    .border_thickness(Thickness::uniform(1.0))
+    .border_thickness(Thickness::uniform(HAIRLINE))
     .into()
 }
 
@@ -77,10 +106,10 @@ pub(crate) fn section(
 pub(crate) fn toolbar(content: impl Into<Element>) -> Element {
     border(content.into())
         .padding(Thickness::xy(spacing::MD, spacing::SM))
-        .corner_radius(8.0)
+        .corner_radius(radius::MD)
         .background(tokens::SubtleFill)
         .border_brush(tokens::CardStroke)
-        .border_thickness(Thickness::uniform(1.0))
+        .border_thickness(Thickness::uniform(HAIRLINE))
         .into()
 }
 
@@ -130,10 +159,10 @@ pub(crate) fn metric_card(label: &str, value: &str, caption: &str) -> Element {
         .spacing(spacing::XS),
     )
     .padding(Thickness::uniform(spacing::LG))
-    .corner_radius(8.0)
+    .corner_radius(radius::MD)
     .background(tokens::SubtleFill)
     .border_brush(tokens::CardStroke)
-    .border_thickness(Thickness::uniform(1.0))
+    .border_thickness(Thickness::uniform(HAIRLINE))
     .min_width(140.0)
     .horizontal_alignment(HorizontalAlignment::Stretch)
     .into()
@@ -170,8 +199,8 @@ pub(crate) fn empty_state(
 ) -> Element {
     let mut children: Vec<Element> = vec![
         text_block(headline.into())
-            .font_size(type_scale::SUBTITLE)
-            .bold()
+            .font_size(type_scale::TITLE)
+            .semibold()
             .into(),
         text_block(description.into())
             .font_size(type_scale::BODY)
@@ -183,10 +212,10 @@ pub(crate) fn empty_state(
     }
     border(vstack(children).spacing(spacing::SM))
         .padding(Thickness::uniform(spacing::XXL))
-        .corner_radius(8.0)
+        .corner_radius(radius::MD)
         .background(tokens::SubtleFill)
         .border_brush(tokens::CardStroke)
-        .border_thickness(Thickness::uniform(1.0))
+        .border_thickness(Thickness::uniform(HAIRLINE))
         .into()
 }
 
@@ -219,7 +248,7 @@ pub(crate) fn settings_row(
         .spacing(spacing::LG),
     )
     .padding(Thickness::xy(spacing::MD, spacing::SM + 2.0))
-    .corner_radius(6.0)
+    .corner_radius(radius::SM)
     .background(tokens::SubtleFill)
     .into()
 }
@@ -263,10 +292,79 @@ pub(crate) fn status_pill(label: impl Into<String>, tone: Tone) -> Element {
             .foreground(tokens::CardBackground),
     )
     .padding(Thickness::xy(spacing::MD, 6.0))
-    .corner_radius(8.0)
+    .corner_radius(radius::MD)
     .background(brush.clone())
     .border_brush(brush)
-    .border_thickness(Thickness::uniform(1.0))
+    .border_thickness(Thickness::uniform(HAIRLINE))
+    .into()
+}
+
+// ---------------------------------------------------------------------------
+// Hero card — the prominent status surface at the top of Overview
+// ---------------------------------------------------------------------------
+//
+// A single large status word with a supporting caption on the left and a
+// right-aligned action cluster, on a star-grid so the actions hold the right
+// edge instead of crowding the title on a narrow window. Replaces the bespoke
+// `border()` chrome the Overview used to hand-build.
+
+pub(crate) fn hero_card(
+    status: impl Into<String>,
+    status_color: ThemeRef,
+    detail: impl Into<String>,
+    actions: Element,
+) -> Element {
+    let detail = detail.into();
+    let mut left: Vec<Element> = vec![
+        text_block(status.into())
+            .font_size(type_scale::HERO)
+            .semibold()
+            .foreground(status_color)
+            .into(),
+    ];
+    if !detail.is_empty() {
+        left.push(
+            text_block(detail)
+                .font_size(type_scale::CAPTION)
+                .foreground(tokens::SecondaryText)
+                .into(),
+        );
+    }
+
+    let left_col: Element = vstack(left).spacing(spacing::XS).grid_column(0).into();
+    let action_col: Element = actions
+        .horizontal_alignment(HorizontalAlignment::Right)
+        .grid_column(1);
+
+    let row = grid(vec![left_col, action_col])
+        .columns([GridLength::STAR, GridLength::Auto])
+        .horizontal_alignment(HorizontalAlignment::Stretch);
+
+    border(row)
+        .padding(Thickness::uniform(spacing::XL))
+        .corner_radius(radius::LG)
+        .background(tokens::CardBackground)
+        .border_brush(tokens::CardStroke)
+        .border_thickness(Thickness::uniform(HAIRLINE))
+        .into()
+}
+
+// ---------------------------------------------------------------------------
+// Pill badge — small rounded chip (e.g. a numbered/checked step indicator)
+// ---------------------------------------------------------------------------
+
+pub(crate) fn pill_badge(label: impl Into<String>, fill: ThemeRef) -> Element {
+    border(
+        text_block(label.into())
+            .font_size(type_scale::BODY)
+            .bold()
+            .foreground(tokens::CardBackground),
+    )
+    .padding(Thickness::xy(spacing::SM + 2.0, spacing::XS))
+    .corner_radius(radius::LG + 2.0)
+    .background(fill.clone())
+    .border_brush(fill)
+    .border_thickness(Thickness::uniform(HAIRLINE))
     .into()
 }
 

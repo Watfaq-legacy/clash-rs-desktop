@@ -21,8 +21,9 @@ use crate::runtime_actions::{
 };
 use crate::views::{
     design::{
-        Tone, ToastQueue, empty_state as design_empty_state, metric_card, metric_grid, section,
-        selectable_text, spacing, status_pill, toolbar, type_scale,
+        HAIRLINE, Tone, ToastQueue, empty_state as design_empty_state, hero_card, metric_card,
+        metric_grid, pill_badge, radius, section, selectable_text, spacing, status_pill, toolbar,
+        type_scale,
     },
     output::{SafetyState, confirm_label, guarded_action},
     profiles::ProfilesState,
@@ -381,9 +382,9 @@ pub(crate) fn overview_page(
     sections.push(section(
         "Runtime configuration",
         Some("Patch the live core or hot-reload from a different config path."),
-        vstack((config_editor(state), config_actions(state, safety, toasts))).spacing(14.0),
+        vstack((config_editor(state), config_actions(state, safety, toasts))).spacing(spacing::MD_LG),
     ));
-    vstack(sections).spacing(14.0).into()
+    vstack(sections).spacing(spacing::MD_LG).into()
 }
 
 fn overview_hero(state: &DashboardState, toasts: &ToastQueue) -> Element {
@@ -393,81 +394,62 @@ fn overview_hero(state: &DashboardState, toasts: &ToastQueue) -> Element {
     } else {
         String::new()
     };
-    border(
-        hstack((
-            vstack((
-                text_block(status_label)
-                    .font_size(24.0)
-                    .bold()
-                    .foreground(status_color),
-                text_block(detail)
-                    .font_size(12.0)
-                    .foreground(tokens::SecondaryText),
-            ))
-            .spacing(4.0),
-            hstack((
-                button("Start")
-                    .icon(SymbolGlyph::Play)
-                    .on_click({
-                        let set_overview = state.set_overview.clone();
-                        let set_action_busy = state.set_action_busy.clone();
-                        let toasts = toasts.clone();
-                        move || {
-                            spawn_action(
-                                set_action_busy.clone(),
-                                set_overview.clone(),
-                                toasts.clone(),
-                                "Core started",
-                                reactor_start_core_text,
-                            );
-                        }
-                    })
-                    .accent(),
-                button("Stop")
-                    .icon(SymbolGlyph::Pause)
-                    .on_click({
-                        let set_overview = state.set_overview.clone();
-                        let set_action_busy = state.set_action_busy.clone();
-                        let toasts = toasts.clone();
-                        move || {
-                            spawn_action(
-                                set_action_busy.clone(),
-                                set_overview.clone(),
-                                toasts.clone(),
-                                "Core stopped",
-                                reactor_stop_core_text,
-                            );
-                        }
-                    })
-                    .subtle(),
-                button("Restart")
-                    .icon(SymbolGlyph::Redo)
-                    .on_click({
-                        let set_overview = state.set_overview.clone();
-                        let set_action_busy = state.set_action_busy.clone();
-                        let toasts = toasts.clone();
-                        move || {
-                            spawn_action(
-                                set_action_busy.clone(),
-                                set_overview.clone(),
-                                toasts.clone(),
-                                "Core restarted",
-                                reactor_restart_core_text,
-                            );
-                        }
-                    })
-                    .subtle(),
-            ))
-            .spacing(8.0),
-        ))
-        .spacing(24.0),
-    )
-    .padding(Thickness::uniform(20.0))
-    .corner_radius(10.0)
-    .background(tokens::CardBackground)
-    .border_brush(tokens::CardStroke)
-    .border_thickness(Thickness::uniform(1.0))
-    .into()
+    let actions = hstack((
+        button("Start")
+            .icon(SymbolGlyph::Play)
+            .on_click({
+                let set_overview = state.set_overview.clone();
+                let set_action_busy = state.set_action_busy.clone();
+                let toasts = toasts.clone();
+                move || {
+                    spawn_action(
+                        set_action_busy.clone(),
+                        set_overview.clone(),
+                        toasts.clone(),
+                        "Core started",
+                        reactor_start_core_text,
+                    );
+                }
+            })
+            .accent(),
+        button("Stop")
+            .icon(SymbolGlyph::Pause)
+            .on_click({
+                let set_overview = state.set_overview.clone();
+                let set_action_busy = state.set_action_busy.clone();
+                let toasts = toasts.clone();
+                move || {
+                    spawn_action(
+                        set_action_busy.clone(),
+                        set_overview.clone(),
+                        toasts.clone(),
+                        "Core stopped",
+                        reactor_stop_core_text,
+                    );
+                }
+            })
+            .subtle(),
+        button("Restart")
+            .icon(SymbolGlyph::Redo)
+            .on_click({
+                let set_overview = state.set_overview.clone();
+                let set_action_busy = state.set_action_busy.clone();
+                let toasts = toasts.clone();
+                move || {
+                    spawn_action(
+                        set_action_busy.clone(),
+                        set_overview.clone(),
+                        toasts.clone(),
+                        "Core restarted",
+                        reactor_restart_core_text,
+                    );
+                }
+            })
+            .subtle(),
+    ))
+    .spacing(spacing::SM);
+
+    hero_card(status_label, status_color, detail, actions.into())
 }
 
 fn core_status_display(state: &DashboardState) -> (String, windows_reactor::ThemeRef) {
@@ -535,7 +517,7 @@ fn setup_panel(
                     state.overview.connected,
                 ),
             ))
-            .spacing(10.0),
+            .spacing(spacing::SM + 2.0),
             hstack((
                 button("Get core")
                     .icon(SymbolGlyph::Download)
@@ -566,43 +548,30 @@ fn setup_panel(
                     })
                     .subtle(),
             ))
-            .spacing(8.0),
+            .spacing(spacing::SM),
         ))
-        .spacing(12.0),
+        .spacing(spacing::MD),
     )
 }
 
 fn setup_step(number: &'static str, label: impl Into<String>, ok: bool) -> Element {
+    let badge_fill = if ok {
+        tokens::SystemSuccess
+    } else {
+        tokens::SystemAttention
+    };
     border(
         hstack((
-            border(
-                text_block(if ok { "✓" } else { number }.to_owned())
-                    .font_size(13.0)
-                    .bold()
-                    .foreground(tokens::CardBackground),
-            )
-            .padding(Thickness::xy(10.0, 4.0))
-            .corner_radius(12.0)
-            .background(if ok {
-                tokens::SystemSuccess
-            } else {
-                tokens::SystemAttention
-            })
-            .border_brush(if ok {
-                tokens::SystemSuccess
-            } else {
-                tokens::SystemAttention
-            })
-            .border_thickness(Thickness::uniform(1.0)),
-            text_block(label.into()).font_size(13.0),
+            pill_badge(if ok { "✓" } else { number }, badge_fill),
+            text_block(label.into()).font_size(type_scale::BODY),
         ))
-        .spacing(10.0),
+        .spacing(spacing::SM + 2.0),
     )
-    .padding(Thickness::uniform(12.0))
-    .corner_radius(6.0)
+    .padding(Thickness::uniform(spacing::MD))
+    .corner_radius(radius::SM)
     .background(tokens::SubtleFill)
     .border_brush(tokens::CardStroke)
-    .border_thickness(Thickness::uniform(1.0))
+    .border_thickness(Thickness::uniform(HAIRLINE))
     .width(260.0)
     .into()
 }
@@ -637,14 +606,14 @@ pub(crate) fn proxies_page(state: &DashboardState) -> Element {
                 groups.len(),
                 statics.len()
             ))
-            .font_size(12.0)
+            .font_size(type_scale::CAPTION)
             .foreground(tokens::SecondaryText),
         ))
-        .spacing(8.0)),
+        .spacing(spacing::SM)),
         section(
             "Proxy groups",
             Some("Tap a member to switch the active proxy for the group."),
-            scroll_view(vstack(group_cards).spacing(10.0)).height(420.0),
+            scroll_view(vstack(group_cards).spacing(spacing::SM + 2.0)).height(420.0),
         ),
         section(
             "Static proxies",
@@ -652,7 +621,7 @@ pub(crate) fn proxies_page(state: &DashboardState) -> Element {
             proxy_static_table(&statics),
         ),
     ))
-    .spacing(14.0)
+    .spacing(spacing::MD_LG)
     .into()
 }
 
@@ -686,12 +655,12 @@ fn proxy_group_card(
     border(
         vstack((
             hstack((
-                text_block(group.name.clone()).font_size(15.0).bold(),
+                text_block(group.name.clone()).font_size(type_scale::BODY_STRONG).bold(),
                 text_block(format!("[{}]", group.proxy_type))
-                    .font_size(12.0)
+                    .font_size(type_scale::CAPTION)
                     .foreground(tokens::SecondaryText),
                 text_block(format!("→ {}", group.current))
-                    .font_size(13.0)
+                    .font_size(type_scale::CAPTION)
                     .foreground(tokens::SecondaryText),
                 button("Test")
                     .icon(SymbolGlyph::Sync)
@@ -709,16 +678,16 @@ fn proxy_group_card(
                     })
                     .subtle(),
             ))
-            .spacing(8.0),
+            .spacing(spacing::SM),
             wrap_chips(chips),
         ))
-        .spacing(8.0),
+        .spacing(spacing::SM),
     )
-    .padding(Thickness::uniform(12.0))
-    .corner_radius(8.0)
+    .padding(Thickness::uniform(spacing::MD))
+    .corner_radius(radius::MD)
     .background(tokens::CardBackground)
     .border_brush(tokens::CardStroke)
-    .border_thickness(Thickness::uniform(1.0))
+    .border_thickness(Thickness::uniform(HAIRLINE))
     .into()
 }
 
@@ -741,9 +710,9 @@ fn wrap_chips(chips: Vec<(String, Element)>) -> Element {
     }
     let row_elements: Vec<Element> = rows
         .into_iter()
-        .map(|row| hstack(row).spacing(6.0).into())
+        .map(|row| hstack(row).spacing(spacing::XS + 2.0).into())
         .collect();
-    vstack(row_elements).spacing(6.0).into()
+    vstack(row_elements).spacing(spacing::XS + 2.0).into()
 }
 
 fn proxy_static_table(rows: &[&ProxyRow]) -> Element {
@@ -787,10 +756,10 @@ pub(crate) fn providers_page(state: &DashboardState) -> Element {
             text_block(format!(
                 "{proxy_count} proxy providers · {rule_count} rule providers"
             ))
-            .font_size(12.0)
+            .font_size(type_scale::CAPTION)
             .foreground(tokens::SecondaryText),
         ))
-        .spacing(8.0)),
+        .spacing(spacing::SM)),
         section(
             "Proxy providers",
             Some("Subscription sources that supply outbound proxy entries."),
@@ -866,10 +835,10 @@ pub(crate) fn providers_page(state: &DashboardState) -> Element {
                         })
                         .subtle(),
                 ))
-                .spacing(8.0),
+                .spacing(spacing::SM),
                 proxy_provider_table(&state.providers),
             ))
-            .spacing(10.0),
+            .spacing(spacing::SM + 2.0),
         ),
         section(
             "Rule providers",
@@ -905,13 +874,13 @@ pub(crate) fn providers_page(state: &DashboardState) -> Element {
                         })
                         .subtle(),
                 ))
-                .spacing(8.0),
+                .spacing(spacing::SM),
                 rule_provider_table(&state.providers),
             ))
-            .spacing(10.0),
+            .spacing(spacing::SM + 2.0),
         ),
     ))
-    .spacing(14.0)
+    .spacing(spacing::MD_LG)
     .into()
 }
 
@@ -988,13 +957,13 @@ pub(crate) fn rules_page(state: &DashboardState) -> Element {
                 })
                 .width(360.0),
             text_block(format!("{} rules", state.rules.rows.len()))
-                .font_size(12.0)
+                .font_size(type_scale::CAPTION)
                 .foreground(tokens::SecondaryText),
         ))
-        .spacing(8.0)),
+        .spacing(spacing::SM)),
         rules_table(&state.rules, &state.rules_filter),
     ))
-    .spacing(14.0)
+    .spacing(spacing::MD_LG)
     .into()
 }
 
@@ -1083,10 +1052,10 @@ pub(crate) fn connections_page(state: &DashboardState, safety: &SafetyState) -> 
                 })
                 .width(320.0),
         ))
-        .spacing(8.0)),
+        .spacing(spacing::SM)),
         connections_master_detail(state, safety, &visible, selected.as_ref()),
     ))
-    .spacing(14.0)
+    .spacing(spacing::MD_LG)
     .into()
 }
 
@@ -1144,11 +1113,11 @@ fn connections_master_detail(
         )
         .height(420.0),
     )
-    .padding(Thickness::uniform(6.0))
-    .corner_radius(8.0)
+    .padding(Thickness::uniform(spacing::SM - 2.0))
+    .corner_radius(radius::MD)
     .background(tokens::ControlFill)
     .border_brush(tokens::CardStroke)
-    .border_thickness(Thickness::uniform(1.0))
+    .border_thickness(Thickness::uniform(HAIRLINE))
     .width(360.0);
 
     let detail: Element = match selected {
@@ -1159,7 +1128,7 @@ fn connections_master_detail(
         ),
         Some(c) => connection_detail(c, state, safety),
     };
-    hstack((master, detail)).spacing(12.0).into()
+    hstack((master, detail)).spacing(spacing::MD).into()
 }
 
 fn connection_detail(
@@ -1176,7 +1145,7 @@ fn connection_detail(
         "Connection detail",
         None,
         vstack((
-            text_block(host_label).font_size(18.0).bold(),
+            text_block(host_label).font_size(type_scale::TITLE).semibold(),
             text_block(format!(
                 "{} · {} · {}",
                 c.network,
@@ -1187,7 +1156,7 @@ fn connection_detail(
                 },
                 if c.asn.is_empty() { "—" } else { c.asn.as_str() }
             ))
-            .font_size(12.0)
+            .font_size(type_scale::CAPTION)
             .foreground(tokens::SecondaryText),
             detail_row("Rule", &c.rule),
             detail_row("Chain", &c.chains),
@@ -1227,9 +1196,9 @@ fn connection_detail(
                 })
                 .subtle(),
             ))
-            .spacing(8.0),
+            .spacing(spacing::SM),
         ))
-        .spacing(10.0),
+        .spacing(spacing::SM + 2.0),
     )
 }
 
@@ -1237,13 +1206,13 @@ fn detail_row(label: &str, value: &str) -> Element {
     let display = if value.is_empty() { "—" } else { value };
     hstack((
         text_block(label.to_owned())
-            .font_size(12.0)
+            .font_size(type_scale::CAPTION)
             .bold()
             .foreground(tokens::SecondaryText)
             .width(96.0),
         selectable_text(display, 13.0),
     ))
-    .spacing(8.0)
+    .spacing(spacing::SM)
     .into()
 }
 
@@ -1331,11 +1300,11 @@ pub(crate) fn flows_page(state: &DashboardState) -> Element {
                 })
                 .subtle(),
         ))
-        .spacing(8.0)),
+        .spacing(spacing::SM)),
         flow_graph_panel(&rows),
         flow_table(&rows),
     ))
-    .spacing(14.0)
+    .spacing(spacing::MD_LG)
     .into()
 }
 
@@ -1383,14 +1352,14 @@ pub(crate) fn dns_page(state: &DashboardState) -> Element {
                 })
                 .accent(),
         ))
-        .spacing(8.0)),
+        .spacing(spacing::SM)),
         section(
             "Resolved answers",
             Some("Results from the controller's DNS resolver."),
             dns_table(&state.dns),
         ),
     ))
-    .spacing(14.0)
+    .spacing(spacing::MD_LG)
     .into()
 }
 
@@ -1451,10 +1420,10 @@ pub(crate) fn logs_page(state: &DashboardState) -> Element {
                 })
                 .subtle(),
         ))
-        .spacing(10.0)),
+        .spacing(spacing::SM + 2.0)),
         log_table(&visible_logs),
     ))
-    .spacing(14.0)
+    .spacing(spacing::MD_LG)
     .into()
 }
 
@@ -1510,11 +1479,11 @@ fn dns_table(snapshot: &DnsSnapshot) -> Element {
 
 fn table_panel(rows: Vec<Element>) -> Element {
     border(scroll_view(vstack(rows).spacing(2.0)).height(360.0))
-        .padding(Thickness::uniform(10.0))
-        .corner_radius(8.0)
+        .padding(Thickness::uniform(spacing::SM + 2.0))
+        .corner_radius(radius::MD)
         .background(tokens::ControlFill)
         .border_brush(tokens::CardStroke)
-        .border_thickness(Thickness::uniform(1.0))
+        .border_thickness(Thickness::uniform(HAIRLINE))
         .into()
 }
 
@@ -1524,7 +1493,7 @@ fn table_header(columns: Vec<&'static str>) -> Element {
             .into_iter()
             .map(|column| {
                 text_block(column)
-                    .font_size(12.0)
+                    .font_size(type_scale::CAPTION)
                     .bold()
                     .foreground(tokens::SecondaryText)
                     .width(130.0)
@@ -1532,7 +1501,7 @@ fn table_header(columns: Vec<&'static str>) -> Element {
             })
             .collect::<Vec<Element>>(),
     )
-    .spacing(8.0)
+    .spacing(spacing::SM)
     .into()
 }
 
@@ -1542,7 +1511,7 @@ fn table_header_cols(columns: &[(&'static str, f64)]) -> Element {
             .iter()
             .map(|(label, width)| {
                 text_block(*label)
-                    .font_size(12.0)
+                    .font_size(type_scale::CAPTION)
                     .bold()
                     .foreground(tokens::SecondaryText)
                     .width(*width)
@@ -1550,7 +1519,7 @@ fn table_header_cols(columns: &[(&'static str, f64)]) -> Element {
             })
             .collect::<Vec<Element>>(),
     )
-    .spacing(8.0)
+    .spacing(spacing::SM)
     .into()
 }
 
@@ -1561,7 +1530,7 @@ fn table_row(columns: Vec<String>) -> Element {
             .map(|column| cell_text(&column, 130.0))
             .collect::<Vec<Element>>(),
     )
-    .spacing(8.0)
+    .spacing(spacing::SM)
     .into()
 }
 
@@ -1572,7 +1541,7 @@ fn table_row_cols(columns: Vec<(String, f64)>) -> Element {
             .map(|(value, width)| cell_text(&value, width))
             .collect::<Vec<Element>>(),
     )
-    .spacing(8.0)
+    .spacing(spacing::SM)
     .into()
 }
 
@@ -1581,7 +1550,7 @@ fn table_row_cols(columns: Vec<(String, f64)>) -> Element {
 /// information is lost — the old behavior dropped the tail unrecoverably.
 fn cell_text(value: &str, width: f64) -> Element {
     let (display, truncated) = truncate_cell(value);
-    let cell = text_block(display).font_size(13.0).width(width);
+    let cell = text_block(display).font_size(type_scale::CAPTION).width(width);
     if truncated {
         cell.tooltip(value.to_owned()).into()
     } else {
@@ -1592,11 +1561,11 @@ fn cell_text(value: &str, width: f64) -> Element {
 fn empty_row(message: &str) -> Element {
     border(
         text_block(message.to_owned())
-            .font_size(13.0)
+            .font_size(type_scale::CAPTION)
             .foreground(tokens::SecondaryText),
     )
-    .padding(Thickness::uniform(12.0))
-    .corner_radius(8.0)
+    .padding(Thickness::uniform(spacing::MD))
+    .corner_radius(radius::MD)
     .background(tokens::SubtleFill)
     .into()
 }
@@ -1751,7 +1720,7 @@ fn config_editor(state: &DashboardState) -> Element {
                 })
                 .width(180.0),
         ))
-        .spacing(14.0),
+        .spacing(spacing::MD_LG),
         hstack((
             text_box(&mixed_port)
                 .header("Mixed port")
@@ -1770,9 +1739,9 @@ fn config_editor(state: &DashboardState) -> Element {
                 })
                 .width(180.0),
         ))
-        .spacing(8.0),
+        .spacing(spacing::SM),
     ))
-    .spacing(10.0)
+    .spacing(spacing::SM + 2.0)
     .into()
 }
 
@@ -1874,7 +1843,7 @@ fn config_actions(state: &DashboardState, safety: &SafetyState, toasts: &ToastQu
             })
             .accent(),
         ))
-        .spacing(12.0),
+        .spacing(spacing::MD),
         hstack((
             text_box(&state.config_reload_path)
                 .header("Reload path")
@@ -1925,9 +1894,9 @@ fn config_actions(state: &DashboardState, safety: &SafetyState, toasts: &ToastQu
             })
             .subtle(),
         ))
-        .spacing(8.0),
+        .spacing(spacing::SM),
     ))
-    .spacing(8.0)
+    .spacing(spacing::SM)
     .into()
 }
 
@@ -2116,6 +2085,8 @@ fn flow_bar_row(row: &FlowRowView, max_bytes: u64) -> Element {
     let rest = (1000.0 - filled).max(0.0);
     let fill: Element = border(Element::Empty)
         .height(14.0)
+        // Half the bar height → fully-rounded ends; a geometric value, not a
+        // card radius, so it stays a literal rather than a `radius::` token.
         .corner_radius(7.0)
         .background(tokens::Accent)
         .grid_column(0)
@@ -2213,15 +2184,15 @@ fn log_row(line: &str) -> Element {
     let body = border(
         hstack((
             text_block(label.to_owned())
-                .font_size(11.0)
+                .font_size(type_scale::CAPTION)
                 .bold()
                 .foreground(color)
                 .width(56.0),
             selectable_text(&message, 13.0),
         ))
-        .spacing(10.0),
+        .spacing(spacing::SM + 2.0),
     )
-    .padding(Thickness::xy(10.0, 6.0))
+    .padding(Thickness::xy(spacing::SM + 2.0, spacing::SM - 2.0))
     .background(tokens::SubtleFill);
     hstack((stripe, body)).spacing(0.0).into()
 }
@@ -2241,11 +2212,11 @@ fn log_table(lines: &[String]) -> Element {
         .map(|line| log_row(line))
         .collect();
     border(scroll_view(vstack(rows).spacing(2.0)).height(420.0))
-        .padding(Thickness::uniform(8.0))
-        .corner_radius(8.0)
+        .padding(Thickness::uniform(spacing::SM))
+        .corner_radius(radius::MD)
         .background(tokens::ControlFill)
         .border_brush(tokens::CardStroke)
-        .border_thickness(Thickness::uniform(1.0))
+        .border_thickness(Thickness::uniform(HAIRLINE))
         .into()
 }
 

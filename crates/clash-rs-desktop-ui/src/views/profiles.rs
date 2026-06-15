@@ -10,7 +10,7 @@ use crate::profile_actions::{
 };
 use crate::settings_actions::{reactor_load_global_override_text, reactor_save_global_override_text};
 use crate::views::dashboard::{looks_like_failure, report_action, trim_one_line};
-use crate::views::design::{Tone, ToastQueue, empty_state, section, spacing};
+use crate::views::design::{Tone, ToastQueue, empty_state, section, spacing, type_scale};
 use crate::views::output::{SafetyState, confirm_label, guarded_action};
 
 #[derive(Clone)]
@@ -204,7 +204,7 @@ fn profile_list(state: &ProfilesState, safety: &SafetyState, toasts: &ToastQueue
 fn profile_import(state: &ProfilesState, toasts: &ToastQueue) -> Element {
     vstack((
         text_block("Import YAML")
-            .font_size(13.0)
+            .font_size(type_scale::CAPTION)
             .foreground(tokens::SecondaryText),
         text_box(&state.import_name)
             .header("Name")
@@ -251,7 +251,7 @@ fn profile_import(state: &ProfilesState, toasts: &ToastQueue) -> Element {
 fn profile_download(state: &ProfilesState, toasts: &ToastQueue) -> Element {
     vstack((
         text_block("Subscription URL")
-            .font_size(13.0)
+            .font_size(type_scale::CAPTION)
             .foreground(tokens::SecondaryText),
         text_box(&state.remote_name)
             .header("Name")
@@ -307,7 +307,7 @@ fn profile_override_section(state: &ProfilesState, toasts: &ToastQueue) -> Eleme
 fn profile_override_builder(state: &ProfilesState, toasts: &ToastQueue) -> Element {
     vstack((
         text_block("Common knobs")
-            .font_size(13.0)
+            .font_size(type_scale::CAPTION)
             .foreground(tokens::SecondaryText),
         hstack((
             ComboBox::new(["", "rule", "global", "direct"])
@@ -406,7 +406,7 @@ fn profile_override_builder(state: &ProfilesState, toasts: &ToastQueue) -> Eleme
 fn profile_override_editor(state: &ProfilesState, toasts: &ToastQueue) -> Element {
     vstack((
         text_block("Advanced YAML")
-            .font_size(13.0)
+            .font_size(type_scale::CAPTION)
             .foreground(tokens::SecondaryText),
         text_box(&state.profile_override)
             .multiline()

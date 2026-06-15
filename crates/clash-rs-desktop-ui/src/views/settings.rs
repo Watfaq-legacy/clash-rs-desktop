@@ -11,7 +11,9 @@ use crate::update_actions::{
     reactor_check_core_update_text, reactor_core_status_text, reactor_download_core_text,
 };
 use crate::views::dashboard::report_action;
-use crate::views::design::{ToastQueue, section, selectable_text, settings_row, spacing, toolbar};
+use crate::views::design::{
+    HAIRLINE, ToastQueue, radius, section, selectable_text, settings_row, spacing, toolbar,
+};
 use crate::views::output::{SafetyState, confirm_label, guarded_action};
 
 #[derive(Clone)]
@@ -117,10 +119,10 @@ fn core_version_row(state: &SettingsState, toasts: &ToastQueue) -> Element {
     vstack((
         border(selectable_text(&state.core_status, 13.0))
             .padding(Thickness::xy(spacing::MD, spacing::SM))
-            .corner_radius(6.0)
+            .corner_radius(radius::SM)
             .background(tokens::SubtleFill)
             .border_brush(tokens::CardStroke)
-            .border_thickness(Thickness::uniform(1.0)),
+            .border_thickness(Thickness::uniform(HAIRLINE)),
         toolbar(hstack((
             button("Check for updates")
                 .icon(SymbolGlyph::Sync)
