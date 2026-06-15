@@ -36,14 +36,6 @@ cargo test --workspace
 cargo check -p clash-rs-desktop-ui --features reactor
 ```
 
-## Local Core Smoke Test
-
-The ignored `.dev/core` folder can hold a downloaded `clash-rs.exe` for local integration checks. After placing the binary at `.dev/core/clash-rs.exe`, run:
-
-```powershell
-cargo run -p clash-rs-desktop-core --example dev_smoke
-```
-
 The shipped UI is the Reactor GUI build:
 
 ```powershell

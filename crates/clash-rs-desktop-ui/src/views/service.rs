@@ -5,7 +5,7 @@ use crate::service_actions::{
     reactor_service_status_text, reactor_service_stop_text, reactor_service_uninstall_text,
 };
 use crate::views::dashboard::report_action;
-use crate::views::design::{ToastQueue, section, spacing, toolbar, type_scale};
+use crate::views::design::{ToastQueue, section, selectable_text, spacing, toolbar, type_scale};
 use crate::views::output::{SafetyState, confirm_label, guarded_action};
 
 #[derive(Clone)]
@@ -174,7 +174,7 @@ pub(crate) fn service_toolbar(
 }
 
 fn status_box(status: &str) -> Element {
-    border(scroll_view(text_block(status.to_owned()).font_size(type_scale::CAPTION)).height(96.0))
+    border(scroll_view(selectable_text(status, type_scale::CAPTION)).height(96.0))
         .padding(Thickness::uniform(spacing::SM + 2.0))
         .corner_radius(8.0)
         .background(tokens::ControlFill)

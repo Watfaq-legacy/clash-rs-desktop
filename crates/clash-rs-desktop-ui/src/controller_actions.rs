@@ -167,6 +167,29 @@ pub(crate) fn reactor_stream_messages(
         .map_err(|error| error.to_string())
 }
 
+/// Open a persistent subscription to a controller WebSocket on the calling
+/// thread, invoking `on_message` for each frame until `stop` is signalled or
+/// the socket closes. Blocks until then, so callers run this on a dedicated
+/// thread. Returns `Ok(())` on a clean stop/close, or the connection error.
+pub(crate) fn reactor_subscribe_messages(
+    path: &str,
+    on_message: impl FnMut(String),
+    stop: tokio::sync::watch::Receiver<bool>,
+) -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    runtime
+        .block_on(async {
+            controller_client()
+                .stream_websocket_text(path, on_message, stop)
+                .await
+        })
+        .map_err(|error| error.to_string())
+}
+
 
 fn run_controller_action<F>(label: &str, future: F) -> String
 where

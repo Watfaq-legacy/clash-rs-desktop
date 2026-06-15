@@ -85,6 +85,31 @@ pub(crate) fn toolbar(content: impl Into<Element>) -> Element {
 }
 
 // ---------------------------------------------------------------------------
+// Selectable text — copyable output rendered via RichTextBlock
+// ---------------------------------------------------------------------------
+//
+// Plain `text_block` (WinUI TextBlock) is never selectable, so command output
+// and status text can't be copied. RichTextBlock supports text selection;
+// multi-line strings become a single paragraph with explicit line breaks.
+
+pub(crate) fn selectable_text(content: &str, font_size: f64) -> Element {
+    use windows_reactor::core::rich_text::{RichTextBlock, RichTextInline, RichTextRun};
+
+    let mut inlines = Vec::new();
+    for (index, line) in content.split('\n').enumerate() {
+        if index > 0 {
+            inlines.push(RichTextInline::LineBreak);
+        }
+        inlines.push(RichTextInline::Run(RichTextRun::plain(line)));
+    }
+    RichTextBlock::single_paragraph(inlines)
+        .font_size(font_size)
+        .selectable()
+        .wrap()
+        .into()
+}
+
+// ---------------------------------------------------------------------------
 // Metric card — single big number with label and caption
 // ---------------------------------------------------------------------------
 
@@ -109,8 +134,29 @@ pub(crate) fn metric_card(label: &str, value: &str, caption: &str) -> Element {
     .background(tokens::SubtleFill)
     .border_brush(tokens::CardStroke)
     .border_thickness(Thickness::uniform(1.0))
-    .width(170.0)
+    .min_width(140.0)
+    .horizontal_alignment(HorizontalAlignment::Stretch)
     .into()
+}
+
+/// Lay metric cards out in a single row of equal-width (star-sized) columns so
+/// the strip fills the available width and the cards shrink together instead of
+/// overflowing off the right edge on a narrow window (the old fixed-width
+/// `hstack` couldn't give). Cards keep a `min_width` floor.
+pub(crate) fn metric_grid(cards: Vec<Element>) -> Element {
+    if cards.is_empty() {
+        return Element::Empty;
+    }
+    let columns: Vec<GridLength> = std::iter::repeat_n(GridLength::STAR, cards.len()).collect();
+    let placed: Vec<Element> = cards
+        .into_iter()
+        .enumerate()
+        .map(|(index, card)| card.grid_column(index as i32))
+        .collect();
+    grid(placed)
+        .columns(columns)
+        .column_spacing(spacing::MD)
+        .into()
 }
 
 // ---------------------------------------------------------------------------

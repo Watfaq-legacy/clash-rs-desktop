@@ -340,6 +340,7 @@ dependencies = [
  "serde_yaml",
  "time",
  "tokio",
+ "windows",
  "windows-reactor",
 ]
 

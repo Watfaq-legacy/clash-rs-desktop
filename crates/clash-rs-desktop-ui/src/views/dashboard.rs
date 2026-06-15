@@ -7,29 +7,33 @@ use crate::controller_actions::{
     reactor_group_delay_text, reactor_healthcheck_provider_proxy_text,
     reactor_healthcheck_proxy_provider_text, reactor_patch_configs_text,
     reactor_reload_configs_text,
-    reactor_select_proxy_text, reactor_stream_messages,
+    reactor_select_proxy_text, reactor_stream_messages, reactor_subscribe_messages,
     reactor_update_proxy_provider_text, reactor_update_rule_provider_text,
 };
 use crate::controller_models::{
     ConnectionRow, ConnectionsSnapshot, DnsSnapshot, OverviewSnapshot, ProviderSnapshot,
-    ProxySnapshot, ProxyRow, RulesSnapshot, load_connections_snapshot, load_dns_snapshot,
-    load_overview_snapshot, load_provider_snapshot, load_proxy_snapshot, load_rules_snapshot,
-    load_traffic_speed,
+    ProxySnapshot, ProxyRow, RulesSnapshot, connections_snapshot_from_ws_frame,
+    load_connections_snapshot, load_dns_snapshot, load_overview_snapshot, load_provider_snapshot,
+    load_proxy_snapshot, load_rules_snapshot, traffic_speeds_from_ws_frame,
 };
 use crate::runtime_actions::{
     reactor_restart_core_text, reactor_start_core_text, reactor_stop_core_text,
 };
 use crate::views::{
     design::{
-        Tone, ToastQueue, empty_state as design_empty_state, metric_card, section,
-        status_pill, toolbar,
+        Tone, ToastQueue, empty_state as design_empty_state, metric_card, metric_grid, section,
+        selectable_text, spacing, status_pill, toolbar, type_scale,
     },
     output::{SafetyState, confirm_label, guarded_action},
     profiles::ProfilesState,
 };
 
 pub(crate) fn looks_like_failure(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
+    // Only inspect the first line. Action results are shaped as
+    // "<label>: ok\n<pretty-printed JSON>" on success or "<label> failed: ..."
+    // on failure, so scanning the whole string would match words like "error"
+    // appearing inside a successful response body (a proxy/host/rule name).
+    let lower = text.lines().next().unwrap_or(text).to_ascii_lowercase();
     lower.contains("failed")
         || lower.contains("error")
         || lower.starts_with("could not")
@@ -57,10 +61,7 @@ pub(crate) fn spawn_action<F>(
     set_action_busy.call(true);
     std::thread::spawn(move || {
         let result = op();
-        let mut snapshot = load_overview_snapshot();
-        let (up, down) = load_traffic_speed();
-        snapshot.upload_speed = up;
-        snapshot.download_speed = down;
+        let snapshot = load_overview_snapshot();
         set_overview.call(snapshot);
         set_action_busy.call(false);
         report_action(&toasts, label, &result);
@@ -122,8 +123,8 @@ pub(crate) struct DashboardState {
     pub(crate) set_rules_filter: SetState<String>,
     pub(crate) connections_filter: String,
     pub(crate) set_connections_filter: SetState<String>,
-    pub(crate) connection_selected: i32,
-    pub(crate) set_connection_selected: SetState<i32>,
+    pub(crate) connection_selected: String,
+    pub(crate) set_connection_selected: SetState<String>,
     pub(crate) action_busy: bool,
     pub(crate) set_action_busy: AsyncSetState<bool>,
     pub(crate) logs_status: String,
@@ -153,47 +154,135 @@ const FLOW_BUFFER_CAP: usize = 300;
 
 static LOG_BUFFER: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static FLOW_BUFFER: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+/// Last full overview snapshot, so a `/ws/traffic` frame (which carries only
+/// up/down rates) can patch the speed fields without re-fetching version,
+/// configs, and memory. Seeded by `load_overview_snapshot` on navigation.
+static OVERVIEW_CACHE: OnceLock<Mutex<OverviewSnapshot>> = OnceLock::new();
 
-pub(crate) fn refresh_connections_live(
-    set_action_busy: AsyncSetState<bool>,
-    set_connections: AsyncSetState<ConnectionsSnapshot>,
+pub(crate) fn cache_overview_snapshot(snapshot: &OverviewSnapshot) {
+    let mutex = OVERVIEW_CACHE.get_or_init(|| Mutex::new(OverviewSnapshot::empty()));
+    if let Ok(mut guard) = mutex.lock() {
+        *guard = snapshot.clone();
+    }
+}
+
+/// Open the live subscription for `page`, returning the stop-sender that the
+/// effect cleanup uses to tear it down. `None` for pages with no live data —
+/// those run no background work at all. Each subscription owns a dedicated
+/// thread + current-thread runtime holding the WebSocket open; signalling the
+/// returned sender wakes the `select!` in the core streamer and ends the thread.
+pub(crate) fn start_page_subscription(
+    page: &str,
+    state: &DashboardState,
+    flows_include_closed: bool,
+) -> Option<tokio::sync::watch::Sender<bool>> {
+    match page {
+        "logs" => Some(spawn_logs_subscription(state)),
+        "flows" => Some(spawn_flows_subscription(state, flows_include_closed)),
+        "connections" => Some(spawn_connections_subscription(state)),
+        "overview" => Some(spawn_traffic_subscription(state)),
+        _ => None,
+    }
+}
+
+fn spawn_logs_subscription(state: &DashboardState) -> tokio::sync::watch::Sender<bool> {
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let set_status = state.set_logs_status.clone();
+    let set_lines = state.set_logs_lines.clone();
+    std::thread::spawn(move || {
+        set_status.call("Connected".to_owned());
+        let status_on_end = set_status.clone();
+        let result = reactor_subscribe_messages("/ws/logs", move |frame| {
+            let merged = with_buffer(&LOG_BUFFER, |buffer| {
+                buffer.push(frame);
+                *buffer = trim_tail(std::mem::take(buffer), LOG_BUFFER_CAP);
+                buffer.clone()
+            });
+            set_lines.call(merged);
+        }, stop_rx);
+        report_subscription_end(&status_on_end, result);
+    });
+    stop_tx
+}
+
+fn spawn_flows_subscription(
+    state: &DashboardState,
+    include_closed: bool,
+) -> tokio::sync::watch::Sender<bool> {
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let set_status = state.set_flows_status.clone();
+    let set_lines = state.set_flows_lines.clone();
+    let path = if include_closed {
+        "/ws/flows?interval=1&top=50&include_closed=true"
+    } else {
+        "/ws/flows?interval=1&top=50&include_closed=false"
+    };
+    std::thread::spawn(move || {
+        set_status.call("Connected".to_owned());
+        let status_on_end = set_status.clone();
+        let result = reactor_subscribe_messages(path, move |frame| {
+            let merged = with_buffer(&FLOW_BUFFER, |buffer| {
+                buffer.push(frame);
+                *buffer = trim_tail(std::mem::take(buffer), FLOW_BUFFER_CAP);
+                buffer.clone()
+            });
+            set_lines.call(merged);
+        }, stop_rx);
+        report_subscription_end(&status_on_end, result);
+    });
+    stop_tx
+}
+
+fn spawn_connections_subscription(state: &DashboardState) -> tokio::sync::watch::Sender<bool> {
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let set_connections = state.set_connections.clone();
+    std::thread::spawn(move || {
+        let result = reactor_subscribe_messages("/connections", move |frame| {
+            if let Some(snapshot) = connections_snapshot_from_ws_frame(&frame) {
+                set_connections.call(snapshot);
+            }
+        }, stop_rx);
+        let _ = result;
+    });
+    stop_tx
+}
+
+fn spawn_traffic_subscription(state: &DashboardState) -> tokio::sync::watch::Sender<bool> {
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let set_overview = state.set_overview.clone();
+    std::thread::spawn(move || {
+        // Seed the cache with a full snapshot so traffic frames patch real
+        // version/configs/memory values rather than an empty placeholder.
+        let base = load_overview_snapshot();
+        cache_overview_snapshot(&base);
+        set_overview.call(base);
+        let result = reactor_subscribe_messages("/ws/traffic", move |frame| {
+            let Some((upload, download)) = traffic_speeds_from_ws_frame(&frame) else {
+                return;
+            };
+            let mutex = OVERVIEW_CACHE.get_or_init(|| Mutex::new(OverviewSnapshot::empty()));
+            let merged = match mutex.lock() {
+                Ok(mut guard) => {
+                    guard.upload_speed = upload;
+                    guard.download_speed = download;
+                    guard.clone()
+                }
+                Err(_) => return,
+            };
+            set_overview.call(merged);
+        }, stop_rx);
+        let _ = result;
+    });
+    stop_tx
+}
+
+fn report_subscription_end(
+    set_status: &AsyncSetState<String>,
+    result: std::result::Result<(), String>,
 ) {
-    set_action_busy.call(true);
-    std::thread::spawn(move || {
-        let snapshot = load_connections_snapshot();
-        set_connections.call(snapshot);
-        set_action_busy.call(false);
-    });
-}
-
-pub(crate) fn refresh_overview_live(
-    set_overview: AsyncSetState<OverviewSnapshot>,
-) {
-    std::thread::spawn(move || {
-        let mut snapshot = load_overview_snapshot();
-        let (up, down) = load_traffic_speed();
-        snapshot.upload_speed = up;
-        snapshot.download_speed = down;
-        set_overview.call(snapshot);
-    });
-}
-
-pub(crate) fn refresh_proxies_live(set_proxies: AsyncSetState<ProxySnapshot>) {
-    std::thread::spawn(move || {
-        set_proxies.call(load_proxy_snapshot());
-    });
-}
-
-pub(crate) fn refresh_providers_live(set_providers: AsyncSetState<ProviderSnapshot>) {
-    std::thread::spawn(move || {
-        set_providers.call(load_provider_snapshot());
-    });
-}
-
-pub(crate) fn refresh_rules_live(set_rules: AsyncSetState<RulesSnapshot>) {
-    std::thread::spawn(move || {
-        set_rules.call(load_rules_snapshot());
-    });
+    if result.is_err() {
+        set_status.call("Disconnected".to_owned());
+    }
 }
 
 pub(crate) fn refresh_logs_live(
@@ -382,38 +471,21 @@ fn overview_hero(state: &DashboardState, toasts: &ToastQueue) -> Element {
 }
 
 fn core_status_display(state: &DashboardState) -> (String, windows_reactor::ThemeRef) {
-    let lc = state.overview.lifecycle.as_str();
-    if lc.starts_with("running") {
-        return ("Running".to_owned(), tokens::SystemSuccess);
+    if state.overview.lifecycle == "running" {
+        ("Running".to_owned(), tokens::SystemSuccess)
+    } else {
+        ("Stopped".to_owned(), tokens::SecondaryText)
     }
-    if lc.starts_with("starting") {
-        return ("Starting…".to_owned(), tokens::SystemAttention);
-    }
-    if lc.starts_with("stopping") {
-        return ("Stopping…".to_owned(), tokens::SystemAttention);
-    }
-    if lc.starts_with("failed") {
-        return ("Failed".to_owned(), tokens::SystemCritical);
-    }
-    if lc.starts_with("needs Windows service") {
-        return ("Needs service".to_owned(), tokens::SystemAttention);
-    }
-    if state.overview.connected {
-        return ("Reachable".to_owned(), tokens::SystemSuccess);
-    }
-    ("Stopped".to_owned(), tokens::SecondaryText)
 }
 
 fn metric_strip(state: &DashboardState) -> Element {
-    hstack((
+    metric_grid(vec![
         metric_card("Upload", &state.overview.upload_speed, "Live throughput"),
         metric_card("Download", &state.overview.download_speed, "Live throughput"),
         metric_card("Memory", &state.overview.memory, "Resident set"),
         metric_card("Connections", &state.overview.connections, "Active flows"),
         metric_card("Mixed Port", &state.overview.mixed_port, "Listening on"),
-    ))
-    .spacing(12.0)
-    .into()
+    ])
 }
 
 fn setup_panel(
@@ -812,11 +884,14 @@ pub(crate) fn providers_page(state: &DashboardState) -> Element {
                         .on_click({
                             let rule_provider = state.rule_provider.clone();
                             let set_rules = state.set_rules.clone();
+                            let set_providers = state.set_providers.clone();
                             move || {
                                 let rule_provider = rule_provider.clone();
                                 let set_rules = set_rules.clone();
+                                let set_providers = set_providers.clone();
                                 std::thread::spawn(move || {
                                     reactor_update_rule_provider_text(&rule_provider);
+                                    set_providers.call(load_provider_snapshot());
                                     set_rules.call(load_rules_snapshot());
                                 });
                             }
@@ -936,14 +1011,16 @@ pub(crate) fn connections_page(state: &DashboardState, safety: &SafetyState) -> 
             )
         })
         .collect();
-    let selected_idx = state.connection_selected;
-    let selected = if selected_idx >= 0 {
-        visible.get(selected_idx as usize).map(|r| (*r).clone())
-    } else {
+    let selected = if state.connection_selected.is_empty() {
         None
+    } else {
+        visible
+            .iter()
+            .find(|connection| connection.id == state.connection_selected)
+            .map(|connection| (*connection).clone())
     };
     vstack((
-        hstack((
+        metric_grid(vec![
             metric_card("Upload", &state.connections.upload_total, "Cumulative"),
             metric_card("Download", &state.connections.download_total, "Cumulative"),
             metric_card(
@@ -951,8 +1028,7 @@ pub(crate) fn connections_page(state: &DashboardState, safety: &SafetyState) -> 
                 &state.connections.rows.len().to_string(),
                 "Active",
             ),
-        ))
-        .spacing(12.0),
+        ]),
         toolbar(hstack((
             button(confirm_label(
                 safety,
@@ -972,16 +1048,22 @@ pub(crate) fn connections_page(state: &DashboardState, safety: &SafetyState) -> 
                         std::thread::spawn(move || {
                             reactor_close_all_connections_text();
                             set_connections.call(load_connections_snapshot());
-                            let mut snapshot = load_overview_snapshot();
-                            let (up, down) = load_traffic_speed();
-                            snapshot.upload_speed = up;
-                            snapshot.download_speed = down;
-                            set_overview.call(snapshot);
+                            set_overview.call(load_overview_snapshot());
                         });
                     });
                 }
             })
             .subtle(),
+            button("Refresh")
+                .icon(SymbolGlyph::Sync)
+                .on_click({
+                    let set_connections = state.set_connections.clone();
+                    move || {
+                        let setter = set_connections.clone();
+                        std::thread::spawn(move || setter.call(load_connections_snapshot()));
+                    }
+                })
+                .subtle(),
             text_box(&state.connections_filter)
                 .placeholder("Search host, ASN, process…")
                 .on_changed({
@@ -989,7 +1071,7 @@ pub(crate) fn connections_page(state: &DashboardState, safety: &SafetyState) -> 
                     let set_connection_selected = state.set_connection_selected.clone();
                     move |value| {
                         set_connections_filter.call(value);
-                        set_connection_selected.call(-1);
+                        set_connection_selected.call(String::new());
                     }
                 })
                 .width(320.0),
@@ -1019,9 +1101,9 @@ fn connections_master_detail(
             None,
         );
     }
-    let labels: Vec<String> = visible
+    let capped: Vec<&ConnectionRow> = visible.iter().take(200).copied().collect();
+    let labels: Vec<String> = capped
         .iter()
-        .take(200)
         .map(|c| {
             let host = if c.host.is_empty() {
                 "—"
@@ -1031,14 +1113,26 @@ fn connections_master_detail(
             format!("{host}  ·  {}  ·  {}", c.network, c.process)
         })
         .collect();
+    let selected_index = capped
+        .iter()
+        .position(|c| c.id == state.connection_selected)
+        .map(|index| index as i32)
+        .unwrap_or(-1);
     let master = border(
         scroll_view(
             list_box()
                 .items(labels)
-                .selected_index(state.connection_selected)
+                .selected_index(selected_index)
                 .on_selection_changed({
                     let set_connection_selected = state.set_connection_selected.clone();
-                    move |index| set_connection_selected.call(index)
+                    let ids: Vec<String> = capped.iter().map(|c| c.id.clone()).collect();
+                    move |index: i32| {
+                        let id = ids
+                            .get(index.max(0) as usize)
+                            .cloned()
+                            .unwrap_or_default();
+                        set_connection_selected.call(id);
+                    }
                 }),
         )
         .height(420.0),
@@ -1118,14 +1212,10 @@ fn connection_detail(
                                     reactor_close_connection_text(&id);
                                 }
                                 set_connections.call(load_connections_snapshot());
-                                let mut snapshot = load_overview_snapshot();
-                                let (up, down) = load_traffic_speed();
-                                snapshot.upload_speed = up;
-                                snapshot.download_speed = down;
-                                set_overview.call(snapshot);
+                                set_overview.call(load_overview_snapshot());
                             });
                         });
-                        set_connection_selected.call(-1);
+                        set_connection_selected.call(String::new());
                     }
                 })
                 .subtle(),
@@ -1144,7 +1234,7 @@ fn detail_row(label: &str, value: &str) -> Element {
             .bold()
             .foreground(tokens::SecondaryText)
             .width(96.0),
-        text_block(display.to_owned()).font_size(13.0),
+        selectable_text(display, 13.0),
     ))
     .spacing(8.0)
     .into()
@@ -1161,15 +1251,14 @@ pub(crate) fn flows_page(state: &DashboardState) -> Element {
         .map(|row| row.destination.clone())
         .unwrap_or_else(|| "-".to_owned());
     vstack((
-        hstack((
+        metric_grid(vec![
             metric_card("Top destination", &top_destination, "By bytes"),
             metric_card("Upload", &format_bytes_approx(upload_total), "Cumulative"),
             metric_card("Download", &format_bytes_approx(download_total), "Cumulative"),
             metric_card("Connections", &connections_total.to_string(), "Tracked"),
             metric_card("Active", &active_count.to_string(), "Flows"),
             metric_card("Closed", &closed_count.to_string(), "Flows"),
-        ))
-        .spacing(12.0),
+        ]),
         toolbar(hstack((
             status_pill(
                 state.flows_status.as_str(),
@@ -1219,6 +1308,21 @@ pub(crate) fn flows_page(state: &DashboardState) -> Element {
                     move |value| set_flows_filter.call(value)
                 })
                 .width(240.0),
+            button("Refresh")
+                .icon(SymbolGlyph::Sync)
+                .on_click({
+                    let set_action_busy = state.set_action_busy.clone();
+                    let set_flows_status = state.set_flows_status.clone();
+                    let set_flows_lines = state.set_flows_lines.clone();
+                    let flows_include_closed = state.flows_include_closed;
+                    move || refresh_flows_live(
+                        set_action_busy.clone(),
+                        set_flows_status.clone(),
+                        set_flows_lines.clone(),
+                        flows_include_closed,
+                    )
+                })
+                .subtle(),
         ))
         .spacing(8.0)),
         flow_graph_panel(&rows),
@@ -1317,6 +1421,21 @@ pub(crate) fn logs_page(state: &DashboardState) -> Element {
                     let set_logs_paused = state.set_logs_paused.clone();
                     move |value| set_logs_paused.call(value)
                 }),
+            button("Refresh")
+                .icon(SymbolGlyph::Sync)
+                .on_click({
+                    let set_action_busy = state.set_action_busy.clone();
+                    let set_logs_status = state.set_logs_status.clone();
+                    let set_logs_lines = state.set_logs_lines.clone();
+                    let logs_paused = state.logs_paused;
+                    move || refresh_logs_live(
+                        set_action_busy.clone(),
+                        set_logs_status.clone(),
+                        set_logs_lines.clone(),
+                        logs_paused,
+                    )
+                })
+                .subtle(),
             button("Clear")
                 .icon(SymbolGlyph::Delete)
                 .on_click({
@@ -1432,12 +1551,7 @@ fn table_row(columns: Vec<String>) -> Element {
     hstack(
         columns
             .into_iter()
-            .map(|column| {
-                text_block(truncate_cell(&column))
-                    .font_size(13.0)
-                    .width(130.0)
-                    .into()
-            })
+            .map(|column| cell_text(&column, 130.0))
             .collect::<Vec<Element>>(),
     )
     .spacing(8.0)
@@ -1448,16 +1562,24 @@ fn table_row_cols(columns: Vec<(String, f64)>) -> Element {
     hstack(
         columns
             .into_iter()
-            .map(|(value, width)| {
-                text_block(truncate_cell(&value))
-                    .font_size(13.0)
-                    .width(width)
-                    .into()
-            })
+            .map(|(value, width)| cell_text(&value, width))
             .collect::<Vec<Element>>(),
     )
     .spacing(8.0)
     .into()
+}
+
+/// A fixed-width table cell. When the value is too long to fit it is truncated
+/// with an ellipsis, and the full value is attached as a hover tooltip so no
+/// information is lost — the old behavior dropped the tail unrecoverably.
+fn cell_text(value: &str, width: f64) -> Element {
+    let (display, truncated) = truncate_cell(value);
+    let cell = text_block(display).font_size(13.0).width(width);
+    if truncated {
+        cell.tooltip(value.to_owned()).into()
+    } else {
+        cell.into()
+    }
 }
 
 fn empty_row(message: &str) -> Element {
@@ -1550,13 +1672,18 @@ fn set_choice_owned(index: i32, choices: &[String], setter: &SetState<String>) {
     }
 }
 
-fn truncate_cell(value: &str) -> String {
+/// Truncate a cell value to a fixed character budget, returning the display
+/// string and whether truncation occurred (so callers can attach a tooltip
+/// carrying the full value).
+fn truncate_cell(value: &str) -> (String, bool) {
     const MAX_CHARS: usize = 34;
-    let mut output = value.chars().take(MAX_CHARS).collect::<String>();
     if value.chars().count() > MAX_CHARS {
+        let mut output = value.chars().take(MAX_CHARS).collect::<String>();
         output.push_str("...");
+        (output, true)
+    } else {
+        (value.to_owned(), false)
     }
-    output
 }
 
 fn choice_index(value: &str, choices: &[&str]) -> i32 {
@@ -1951,36 +2078,81 @@ fn flow_table(rows: &[FlowRowView]) -> Element {
 
 fn flow_graph_panel(rows: &[FlowRowView]) -> Element {
     let top = rows.iter().take(8).collect::<Vec<_>>();
-    let max_bytes = top.iter().map(|row| row.bytes).max().unwrap_or(1);
-    let mut lines = Vec::new();
     if top.is_empty() {
-        lines.push("No flow data for graph.".to_owned());
-    } else {
-        for row in top {
-            let width = ((row.bytes as f64 / max_bytes as f64) * 20.0).round() as usize;
-            let bar = "#".repeat(width.max(1));
-            lines.push(format!(
-                "{:<18} {:<20} {}",
-                truncate_cell(&row.destination),
-                bar,
-                format_bytes_approx(row.bytes)
-            ));
-        }
+        return panel(
+            "Top destinations by traffic",
+            design_empty_state(
+                "No flow data yet",
+                "Refresh flows while the core is running to chart the busiest destinations.",
+                None,
+            ),
+        );
     }
-
+    let max_bytes = top.iter().map(|row| row.bytes).max().unwrap_or(1).max(1);
+    let bars: Vec<Element> = top
+        .into_iter()
+        .map(|row| flow_bar_row(row, max_bytes))
+        .collect();
     panel(
-        "Flow graph (table-first)",
-        scroll_view(
-            vstack(
-                lines
-                    .into_iter()
-                    .map(|line| text_block(line).font_size(12.0).into())
-                    .collect::<Vec<Element>>(),
-            )
-            .spacing(4.0),
-        )
-        .height(140.0),
+        "Top destinations by traffic",
+        scroll_view(vstack(bars).spacing(spacing::SM)).height(200.0),
     )
+}
+
+/// One horizontal bar: destination label, a proportional filled track, and the
+/// byte total. The track is a two-cell star grid so the fill width is a true
+/// fraction of the busiest row instead of repeated `#` characters.
+fn flow_bar_row(row: &FlowRowView, max_bytes: u64) -> Element {
+    let fraction = (row.bytes as f64 / max_bytes as f64).clamp(0.0, 1.0);
+    // Star weights must stay positive so an empty row still shows a sliver.
+    let filled = (fraction * 1000.0).round().max(1.0);
+    let rest = (1000.0 - filled).max(0.0);
+    let fill: Element = border(Element::Empty)
+        .height(14.0)
+        .corner_radius(7.0)
+        .background(tokens::Accent)
+        .grid_column(0)
+        .into();
+    let track_children: Vec<Element> = if rest > 0.0 {
+        vec![fill, border(Element::Empty).grid_column(1).into()]
+    } else {
+        vec![fill]
+    };
+    let track: Element = grid(track_children)
+        .columns(if rest > 0.0 {
+            vec![GridLength::Star(filled), GridLength::Star(rest)]
+        } else {
+            vec![GridLength::Star(filled)]
+        })
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .into();
+
+    let (dest_display, dest_truncated) = truncate_cell(&row.destination);
+    let dest_label = text_block(dest_display)
+        .font_size(type_scale::CAPTION)
+        .grid_column(0);
+    let dest_label: Element = if dest_truncated {
+        dest_label.tooltip(row.destination.clone()).into()
+    } else {
+        dest_label.into()
+    };
+    grid(vec![
+        dest_label,
+        track.grid_column(1),
+        text_block(format_bytes_approx(row.bytes))
+            .font_size(type_scale::CAPTION)
+            .foreground(tokens::SecondaryText)
+            .horizontal_alignment(HorizontalAlignment::Right)
+            .grid_column(2)
+            .into(),
+    ])
+    .columns([
+        GridLength::Pixel(150.0),
+        GridLength::STAR,
+        GridLength::Pixel(90.0),
+    ])
+    .column_spacing(spacing::MD)
+    .into()
 }
 
 fn filtered_logs(lines: &[String], level: &str) -> Vec<String> {
@@ -2038,7 +2210,7 @@ fn log_row(line: &str) -> Element {
                 .bold()
                 .foreground(color)
                 .width(56.0),
-            text_block(message).font_size(13.0),
+            selectable_text(&message, 13.0),
         ))
         .spacing(10.0),
     )
@@ -2095,7 +2267,11 @@ fn format_bytes_approx(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{filtered_logs, parse_flow_rows, trim_tail};
+    use super::{
+        choice_index, effective_str, filtered_logs, flow_totals, format_bytes_approx,
+        is_plausible_connection_id, looks_like_failure, matches_filter, parse_flow_rows,
+        parse_on_off, trim_tail, truncate_cell,
+    };
 
     #[test]
     fn trim_tail_keeps_recent_entries() {
@@ -2107,6 +2283,12 @@ mod tests {
         ];
         let trimmed = trim_tail(items, 2);
         assert_eq!(trimmed, vec!["three".to_owned(), "four".to_owned()]);
+    }
+
+    #[test]
+    fn trim_tail_is_noop_when_under_cap() {
+        let items = vec!["a".to_owned(), "b".to_owned()];
+        assert_eq!(trim_tail(items.clone(), 5), items);
     }
 
     #[test]
@@ -2122,6 +2304,13 @@ mod tests {
     }
 
     #[test]
+    fn filtered_logs_all_returns_everything() {
+        let logs = vec!["[info] a".to_owned(), "[error] b".to_owned()];
+        assert_eq!(filtered_logs(&logs, "all").len(), 2);
+        assert_eq!(filtered_logs(&logs, "").len(), 2);
+    }
+
+    #[test]
     fn parse_flow_rows_reads_json_entries() {
         let lines = vec![
             r#"{"destination":"example.com","protocol":"tcp","connections":2,"upload":1024,"download":2048}"#
@@ -2131,5 +2320,108 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].destination, "example.com");
         assert_eq!(rows[0].connections, 2);
+    }
+
+    #[test]
+    fn parse_flow_rows_unwraps_flows_envelope_and_defaults_bytes() {
+        // A frame wrapping rows under "flows"; bytes omitted → upload+download.
+        let lines = vec![
+            r#"{"flows":[{"host":"a.com","network":"udp","up":10,"down":20}]}"#.to_owned(),
+        ];
+        let rows = parse_flow_rows(&lines);
+        assert_eq!(rows.len(), 1);
+        // Falls back to host/network aliases.
+        assert_eq!(rows[0].destination, "a.com");
+        assert_eq!(rows[0].protocol, "udp");
+        assert_eq!(rows[0].bytes, 30);
+    }
+
+    #[test]
+    fn flow_totals_sum_upload_download_connections() {
+        let lines = vec![
+            r#"{"destination":"a","upload":100,"download":200,"connections":1}"#.to_owned(),
+            r#"{"destination":"b","upload":50,"download":25,"connections":3}"#.to_owned(),
+        ];
+        let rows = parse_flow_rows(&lines);
+        assert_eq!(flow_totals(&rows), (150, 225, 4));
+    }
+
+    #[test]
+    fn looks_like_failure_ignores_json_body_after_first_line() {
+        // Success line, then a body that happens to contain "error".
+        assert!(!looks_like_failure(
+            "select proxy: ok\n{\n  \"note\": \"error-handler proxy\"\n}"
+        ));
+        // Real failures are on the first line.
+        assert!(looks_like_failure("select proxy failed: no such group"));
+        assert!(looks_like_failure("could not reach controller"));
+        assert!(looks_like_failure("permission denied"));
+    }
+
+    #[test]
+    fn effective_str_prefers_local_then_meaningful_snapshot() {
+        // Local edit wins.
+        assert_eq!(effective_str("rule", "global"), "rule");
+        // Empty local falls back to snapshot...
+        assert_eq!(effective_str("", "global"), "global");
+        // ...unless the snapshot is a placeholder dash or blank.
+        assert_eq!(effective_str("", "-"), "");
+        assert_eq!(effective_str("", "   "), "");
+    }
+
+    #[test]
+    fn choice_index_matches_case_insensitively_or_minus_one() {
+        let choices = ["rule", "global", "direct"];
+        assert_eq!(choice_index("global", &choices), 1);
+        assert_eq!(choice_index("GLOBAL", &choices), 1);
+        assert_eq!(choice_index(" direct ", &choices), 2);
+        assert_eq!(choice_index("missing", &choices), -1);
+    }
+
+    #[test]
+    fn plausible_connection_id_rejects_unsafe_strings() {
+        assert!(is_plausible_connection_id("abc-123_DEF"));
+        assert!(!is_plausible_connection_id(""));
+        assert!(!is_plausible_connection_id("has space"));
+        assert!(!is_plausible_connection_id("path/../traversal"));
+    }
+
+    #[test]
+    fn matches_filter_is_case_insensitive_and_empty_matches_all() {
+        assert!(matches_filter("", &["anything"]));
+        assert!(matches_filter("HOST", &["myhost.com", "tcp"]));
+        assert!(matches_filter("  tcp ", &["myhost.com", "TCP"]));
+        assert!(!matches_filter("zzz", &["myhost.com", "tcp"]));
+    }
+
+    #[test]
+    fn parse_on_off_accepts_known_tokens() {
+        assert_eq!(parse_on_off("on"), Some(true));
+        assert_eq!(parse_on_off("TRUE"), Some(true));
+        assert_eq!(parse_on_off("1"), Some(true));
+        assert_eq!(parse_on_off("off"), Some(false));
+        assert_eq!(parse_on_off("no"), Some(false));
+        assert_eq!(parse_on_off("maybe"), None);
+    }
+
+    #[test]
+    fn format_bytes_approx_scales_units() {
+        assert_eq!(format_bytes_approx(512), "512 B");
+        assert_eq!(format_bytes_approx(1024), "1.0 KiB");
+        assert_eq!(format_bytes_approx(1024 * 1024), "1.0 MiB");
+    }
+
+    #[test]
+    fn truncate_cell_flags_and_ellipsizes_only_when_over_budget() {
+        // Short value: unchanged, not flagged → no tooltip attached.
+        let (display, truncated) = truncate_cell("short");
+        assert_eq!(display, "short");
+        assert!(!truncated);
+        // Long value: ellipsized and flagged so the caller adds a tooltip.
+        let long = "x".repeat(50);
+        let (display, truncated) = truncate_cell(&long);
+        assert!(truncated);
+        assert!(display.ends_with("..."));
+        assert_eq!(display.chars().count(), 34 + 3);
     }
 }

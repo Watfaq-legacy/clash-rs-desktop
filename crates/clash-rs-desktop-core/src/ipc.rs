@@ -199,6 +199,18 @@ impl ClashIpcClient {
         platform::websocket_text_messages(&self.config, path, max_messages, timeout).await
     }
 
+    /// Open a persistent subscription to a controller WebSocket, invoking
+    /// `on_message` for every text frame until `stop` is signalled or the
+    /// socket closes. The subscription counterpart to [`Self::sample_websocket_text`].
+    pub async fn stream_websocket_text(
+        &self,
+        path: &str,
+        on_message: impl FnMut(String),
+        stop: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        platform::stream_websocket_text(&self.config, path, on_message, stop).await
+    }
+
     pub async fn get_json<T>(&self, path: &str) -> anyhow::Result<T>
     where
         T: DeserializeOwned,
@@ -329,9 +341,9 @@ pub struct RulesResponse {
 pub struct ConnectionsResponse {
     #[serde(default)]
     pub connections: Vec<Value>,
-    #[serde(default)]
+    #[serde(default, rename = "downloadTotal")]
     pub download_total: Option<u64>,
-    #[serde(default)]
+    #[serde(default, rename = "uploadTotal")]
     pub upload_total: Option<u64>,
 }
 
@@ -507,26 +519,66 @@ mod platform {
         timeout: std::time::Duration,
     ) -> anyhow::Result<Vec<String>> {
         if let Some(base_url) = remote_ws_base(config) {
-            let mut request = format!("{}{path}", base_url.trim_end_matches('/'))
-                .into_client_request()?;
-            if let Some(secret) = &config.auth_secret {
-                request
-                    .headers_mut()
-                    .insert("authorization", format!("Bearer {secret}").parse()?);
-            }
-
-            let (mut websocket, _) = tokio_tungstenite::connect_async(request)
-                .await
-                .context("failed to open remote Clash controller WebSocket")?;
-
+            let mut websocket = open_remote_websocket(&base_url, path, config).await?;
             return collect_websocket_messages(&mut websocket, max_messages, timeout).await;
         }
 
+        let mut websocket = open_pipe_websocket(path, config).await?;
+        collect_websocket_messages(&mut websocket, max_messages, timeout).await
+    }
+
+    /// Open the controller WebSocket and invoke `on_message` for every text
+    /// frame until `stop` flips to `true` or the socket closes. Unlike
+    /// [`websocket_text_messages`], this keeps the connection open and delivers
+    /// frames as they arrive — the persistent-subscription counterpart to the
+    /// batch sampler. Returns once the stream ends or a stop is signalled.
+    pub async fn stream_websocket_text(
+        config: &ClashIpcClientConfig,
+        path: &str,
+        on_message: impl FnMut(String),
+        stop: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        if let Some(base_url) = remote_ws_base(config) {
+            let mut websocket = open_remote_websocket(&base_url, path, config).await?;
+            return drive_websocket_stream(&mut websocket, on_message, stop).await;
+        }
+
+        let mut websocket = open_pipe_websocket(path, config).await?;
+        drive_websocket_stream(&mut websocket, on_message, stop).await
+    }
+
+    async fn open_remote_websocket(
+        base_url: &str,
+        path: &str,
+        config: &ClashIpcClientConfig,
+    ) -> anyhow::Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    > {
+        let mut request = format!("{}{path}", base_url.trim_end_matches('/')).into_client_request()?;
+        if let Some(secret) = &config.auth_secret {
+            request
+                .headers_mut()
+                .insert("authorization", format!("Bearer {secret}").parse()?);
+        }
+        let (websocket, _) = tokio_tungstenite::connect_async(request)
+            .await
+            .context("failed to open remote Clash controller WebSocket")?;
+        Ok(websocket)
+    }
+
+    async fn open_pipe_websocket(
+        path: &str,
+        config: &ClashIpcClientConfig,
+    ) -> anyhow::Result<
+        tokio_tungstenite::WebSocketStream<
+            tokio::net::windows::named_pipe::NamedPipeClient,
+        >,
+    > {
         let client = ClientOptions::new()
             .open(&config.pipe_path)
-            .with_context(|| {
-                format!("failed to open Clash controller pipe {}", config.pipe_path)
-            })?;
+            .with_context(|| format!("failed to open Clash controller pipe {}", config.pipe_path))?;
 
         let mut request = format!("ws://localhost{path}").into_client_request()?;
         if let Some(secret) = &config.auth_secret {
@@ -534,12 +586,46 @@ mod platform {
                 .headers_mut()
                 .insert("authorization", format!("Bearer {secret}").parse()?);
         }
-
-        let (mut websocket, _) = tokio_tungstenite::client_async(request, client)
+        let (websocket, _) = tokio_tungstenite::client_async(request, client)
             .await
             .context("failed to open Clash controller WebSocket")?;
+        Ok(websocket)
+    }
 
-        collect_websocket_messages(&mut websocket, max_messages, timeout).await
+    async fn drive_websocket_stream<S>(
+        websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+        mut on_message: impl FnMut(String),
+        mut stop: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        if *stop.borrow() {
+            return Ok(());
+        }
+        loop {
+            tokio::select! {
+                changed = stop.changed() => {
+                    // Sender dropped or value flipped to true — either way, stop.
+                    if changed.is_err() || *stop.borrow() {
+                        return Ok(());
+                    }
+                }
+                message = websocket.next() => {
+                    let Some(message) = message else {
+                        return Ok(());
+                    };
+                    match message? {
+                        Message::Text(text) => on_message(text),
+                        Message::Binary(bytes) => {
+                            on_message(String::from_utf8_lossy(&bytes).into_owned())
+                        }
+                        Message::Close(_) => return Ok(()),
+                        Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
+                    }
+                }
+            }
+        }
     }
 
     async fn collect_websocket_messages<S>(
@@ -624,6 +710,15 @@ mod platform {
     ) -> anyhow::Result<Vec<String>> {
         anyhow::bail!("Clash IPC over Unix domain sockets is not implemented yet")
     }
+
+    pub async fn stream_websocket_text(
+        _config: &ClashIpcClientConfig,
+        _path: &str,
+        _on_message: impl FnMut(String),
+        _stop: tokio::sync::watch::Receiver<bool>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Clash IPC over Unix domain sockets is not implemented yet")
+    }
 }
 
 #[cfg(test)]
@@ -648,6 +743,66 @@ mod tests {
         assert_eq!(version.version, "0.10.6-alpha+sha.abc1234");
         assert_eq!(version.commit.as_deref(), Some("abc1234"));
         assert!(!version.meta);
+    }
+
+    #[test]
+    fn connections_response_reads_camelcase_totals() {
+        // The Clash controller emits camelCase `uploadTotal`/`downloadTotal`.
+        // Without the serde rename these silently deserialize to None and the
+        // UI's cumulative traffic counters stay blank.
+        let response: super::ConnectionsResponse = serde_json::from_str(
+            r#"{"connections":[],"uploadTotal":4096,"downloadTotal":1024}"#,
+        )
+        .unwrap();
+
+        assert_eq!(response.upload_total, Some(4096));
+        assert_eq!(response.download_total, Some(1024));
+    }
+
+    /// A persistent subscription to an unreachable endpoint must fail fast and
+    /// return — never hang — so the UI's effect-cleanup teardown can't deadlock.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stream_websocket_returns_on_unreachable_endpoint() {
+        use super::{ClashIpcClient, ClashIpcClientConfig};
+
+        let client = ClashIpcClient::new(ClashIpcClientConfig {
+            pipe_path: r"\\.\pipe\clash-rs-desktop-test-nonexistent".to_owned(),
+            auth_secret: None,
+        });
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.stream_websocket_text("/ws/traffic", |_frame| {}, stop_rx),
+        )
+        .await;
+
+        // The open fails (no such pipe); the call must resolve, not time out.
+        assert!(result.is_ok(), "stream_websocket_text hung on a dead endpoint");
+        assert!(result.unwrap().is_err(), "expected a connection error");
+    }
+
+    /// A pre-signalled stop must short-circuit before any frame is delivered.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn stream_websocket_honors_prestopped_signal() {
+        use super::{ClashIpcClient, ClashIpcClientConfig};
+
+        let client = ClashIpcClient::new(ClashIpcClientConfig {
+            pipe_path: r"\\.\pipe\clash-rs-desktop-test-nonexistent".to_owned(),
+            auth_secret: None,
+        });
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        stop_tx.send(true).unwrap();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.stream_websocket_text("/ws/traffic", |_frame| {}, stop_rx),
+        )
+        .await;
+
+        assert!(result.is_ok(), "stream_websocket_text hung despite a pre-set stop");
     }
 }
 

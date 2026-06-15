@@ -1,11 +1,11 @@
 
 use std::path::Path;
 
-use clash_rs_desktop_core::{CoreState, ProfileId, ProfileSource, ProfileStore, UserProfile};
+use clash_rs_desktop_core::{CoreState, ProfileId, ProfileSource, ProfileStore, ServiceCommand, ServiceResponse, UserProfile};
 
 use crate::{
     paths::reactor_paths,
-    runtime_actions::managed_runtime,
+    service_actions::send_service_command_sync,
 };
 
 #[derive(Clone, Debug)]
@@ -551,17 +551,76 @@ fn describe_profile_source(source: &ProfileSource) -> String {
 }
 
 fn reject_profile_mutation_while_running(action: &str) -> Option<String> {
-    let mut runtime = managed_runtime().lock().ok()?;
-    let manager = runtime.as_mut()?;
-    let state = manager.state();
+    let state = match send_service_command_sync(ServiceCommand::Status) {
+        Ok(ServiceResponse::State { state }) => state,
+        _ => return None,
+    };
     if matches!(
         state,
         CoreState::Starting { .. } | CoreState::Running { .. } | CoreState::Stopping
     ) {
         Some(format!(
-            "{action}: stop the managed core before changing profiles"
+            "{action}: stop the core before changing profiles"
         ))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        normalize_profile_index, parse_optional_port, sanitize_profile_id, yaml_bool, yaml_i64,
+        yaml_string,
+    };
+
+    #[test]
+    fn normalize_index_handles_empty_and_out_of_range() {
+        // Empty list → -1 (no selection).
+        assert_eq!(normalize_profile_index(0, 0), -1);
+        assert_eq!(normalize_profile_index(5, 0), -1);
+        // Out of range or negative → clamp to first.
+        assert_eq!(normalize_profile_index(-1, 3), 0);
+        assert_eq!(normalize_profile_index(3, 3), 0);
+        // In range → unchanged.
+        assert_eq!(normalize_profile_index(2, 3), 2);
+    }
+
+    #[test]
+    fn sanitize_profile_id_slugifies_and_collapses_separators() {
+        assert_eq!(sanitize_profile_id("Home Profile"), "home-profile");
+        assert_eq!(sanitize_profile_id("Work_VPN 2"), "work-vpn-2");
+        // Leading/trailing/duplicate separators collapse.
+        assert_eq!(sanitize_profile_id("  --Travel--  "), "travel");
+        // Unicode is lowercased; non-alphanumerics drop.
+        assert_eq!(sanitize_profile_id("Café!!!Net"), "cafnet");
+        // Nothing usable → fallback id.
+        assert_eq!(sanitize_profile_id("!!!"), "profile");
+        assert_eq!(sanitize_profile_id(""), "profile");
+    }
+
+    #[test]
+    fn parse_optional_port_enforces_range() {
+        assert_eq!(parse_optional_port(""), None);
+        assert_eq!(parse_optional_port("  "), None);
+        assert_eq!(parse_optional_port("7890"), Some(7890));
+        // Out of the 1..=65535 range is rejected.
+        assert_eq!(parse_optional_port("0"), None);
+        assert_eq!(parse_optional_port("70000"), None);
+        assert_eq!(parse_optional_port("-1"), None);
+        assert_eq!(parse_optional_port("notaport"), None);
+    }
+
+    #[test]
+    fn yaml_extractors_read_typed_fields() {
+        let value: serde_yaml::Value =
+            serde_yaml::from_str("mode: rule\nmixed-port: 7890\nallow-lan: true\n").unwrap();
+        assert_eq!(yaml_string(&value, "mode"), "rule");
+        assert_eq!(yaml_i64(&value, "mixed-port"), "7890");
+        assert!(yaml_bool(&value, "allow-lan"));
+        // Missing keys yield empty/false defaults.
+        assert_eq!(yaml_string(&value, "absent"), "");
+        assert_eq!(yaml_i64(&value, "absent"), "");
+        assert!(!yaml_bool(&value, "absent"));
     }
 }

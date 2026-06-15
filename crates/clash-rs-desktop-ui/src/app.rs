@@ -6,8 +6,8 @@ use clash_rs_desktop_core::{TunLaunchPolicy, UpdateChannel};
 
 use crate::{
     controller_models::{
-        ConnectionsSnapshot, DnsSnapshot, ProviderSnapshot, ProxySnapshot, RulesSnapshot,
-        load_connections_snapshot, load_overview_snapshot, load_provider_snapshot,
+        ConnectionsSnapshot, DnsSnapshot, OverviewSnapshot, ProviderSnapshot, ProxySnapshot,
+        RulesSnapshot, load_connections_snapshot, load_overview_snapshot, load_provider_snapshot,
         load_proxy_snapshot, load_rules_snapshot,
     },
     profile_actions::{
@@ -20,9 +20,7 @@ use crate::{
     views::{
         dashboard::{
             DashboardState, connections_page, dns_page, flows_page, logs_page, overview_page,
-            providers_page, proxies_page, refresh_connections_live, refresh_flows_live,
-            refresh_logs_live, refresh_overview_live, refresh_providers_live,
-            refresh_proxies_live, refresh_rules_live, rules_page,
+            providers_page, proxies_page, rules_page, start_page_subscription,
         },
         design::{Toast, ToastQueue, busy_strip, toast_stack},
         output::SafetyState,
@@ -45,8 +43,8 @@ pub(crate) fn app(_cx: &mut RenderCx) -> Element {
     };
     let toast_queue = toast_queue(_cx);
 
-    configure_live_refresh(_cx, &selected_page, &dashboard_state);
     configure_toast_purge(_cx, &toast_queue);
+    configure_live_subscription(_cx, &selected_page, &dashboard_state);
 
     NavigationView::new(
         navigation_items(),
@@ -117,7 +115,12 @@ pub(crate) fn app(_cx: &mut RenderCx) -> Element {
     .into()
 }
 
-fn configure_live_refresh(
+/// Hold a persistent WebSocket subscription open for the active page's live
+/// data and tear it down when the page (or a relevant toggle) changes. Keyed
+/// on the inputs that determine the subscription target so navigating away,
+/// pausing logs, or toggling closed-flow inclusion re-establishes it. Pages
+/// without live data run no subscription — and therefore no background work.
+fn configure_live_subscription(
     cx: &mut RenderCx,
     selected_page: &str,
     dashboard_state: &DashboardState,
@@ -125,123 +128,18 @@ fn configure_live_refresh(
     let selected_page = selected_page.to_owned();
     let logs_paused = dashboard_state.logs_paused;
     let flows_include_closed = dashboard_state.flows_include_closed;
-
-    let set_action_busy = dashboard_state.set_action_busy.clone();
-    let set_connections = dashboard_state.set_connections.clone();
-    let set_logs_status = dashboard_state.set_logs_status.clone();
-    let set_logs_lines = dashboard_state.set_logs_lines.clone();
-    let set_flows_status = dashboard_state.set_flows_status.clone();
-    let set_flows_lines = dashboard_state.set_flows_lines.clone();
-    let set_overview = dashboard_state.set_overview.clone();
-    let set_proxies = dashboard_state.set_proxies.clone();
-    let set_providers = dashboard_state.set_providers.clone();
-    let set_rules = dashboard_state.set_rules.clone();
+    let state = dashboard_state.clone();
 
     cx.use_effect_with_cleanup(
         (selected_page.clone(), logs_paused, flows_include_closed),
         move || {
-            let mut timers = Vec::new();
-
-            if selected_page == "overview" {
-                if let Ok(timer) = DispatcherTimer::new(Duration::from_secs(3), {
-                    let set_overview = set_overview.clone();
-                    move || {
-                        refresh_overview_live(set_overview.clone());
-                    }
-                }) {
-                    timers.push(timer);
-                }
-            }
-
-            if selected_page == "connections" {
-                if let Ok(timer) = DispatcherTimer::new(Duration::from_secs(2), {
-                    let set_action_busy = set_action_busy.clone();
-                    let set_connections = set_connections.clone();
-                    move || {
-                        refresh_connections_live(
-                            set_action_busy.clone(),
-                            set_connections.clone(),
-                        );
-                    }
-                }) {
-                    timers.push(timer);
-                }
-            }
-
-            if selected_page == "proxies" {
-                if let Ok(timer) = DispatcherTimer::new(Duration::from_secs(5), {
-                    let set_proxies = set_proxies.clone();
-                    move || {
-                        refresh_proxies_live(set_proxies.clone());
-                    }
-                }) {
-                    timers.push(timer);
-                }
-            }
-
-            if selected_page == "providers" {
-                if let Ok(timer) = DispatcherTimer::new(Duration::from_secs(10), {
-                    let set_providers = set_providers.clone();
-                    move || {
-                        refresh_providers_live(set_providers.clone());
-                    }
-                }) {
-                    timers.push(timer);
-                }
-            }
-
-            if selected_page == "rules" {
-                if let Ok(timer) = DispatcherTimer::new(Duration::from_secs(15), {
-                    let set_rules = set_rules.clone();
-                    move || {
-                        refresh_rules_live(set_rules.clone());
-                    }
-                }) {
-                    timers.push(timer);
-                }
-            }
-
-            if selected_page == "logs" {
-                if let Ok(timer) = DispatcherTimer::new(Duration::from_secs(2), {
-                    let set_action_busy = set_action_busy.clone();
-                    let set_logs_status = set_logs_status.clone();
-                    let set_logs_lines = set_logs_lines.clone();
-                    move || {
-                        refresh_logs_live(
-                            set_action_busy.clone(),
-                            set_logs_status.clone(),
-                            set_logs_lines.clone(),
-                            logs_paused,
-                        );
-                    }
-                }) {
-                    timers.push(timer);
-                }
-            }
-
-            if selected_page == "flows" {
-                if let Ok(timer) = DispatcherTimer::new(Duration::from_secs(3), {
-                    let set_action_busy = set_action_busy.clone();
-                    let set_flows_status = set_flows_status.clone();
-                    let set_flows_lines = set_flows_lines.clone();
-                    move || {
-                        refresh_flows_live(
-                            set_action_busy.clone(),
-                            set_flows_status.clone(),
-                            set_flows_lines.clone(),
-                            flows_include_closed,
-                        );
-                    }
-                }) {
-                    timers.push(timer);
-                }
-            }
-
-            if timers.is_empty() {
-                None::<Box<dyn FnOnce()>>
-            } else {
-                Some(Box::new(move || drop(timers)))
-            }
+            let stop = start_page_subscription(&selected_page, &state, flows_include_closed);
+            stop.map(|stop_tx| {
+                let cleanup: Box<dyn FnOnce()> = Box::new(move || {
+                    let _ = stop_tx.send(true);
+                });
+                cleanup
+            })
         },
     );
 }
@@ -453,7 +351,7 @@ fn page_tag_for_query(query: &str) -> Option<String> {
 }
 
 fn dashboard_state(cx: &mut RenderCx) -> DashboardState {
-    let (overview, set_overview) = cx.use_async_state(load_overview_snapshot());
+    let (overview, set_overview) = cx.use_async_state(OverviewSnapshot::empty());
     let (proxies, set_proxies) = cx.use_async_state(ProxySnapshot::empty());
     let (providers, set_providers) = cx.use_async_state(ProviderSnapshot::empty());
     let (rules, set_rules) = cx.use_async_state(RulesSnapshot::empty());
@@ -475,7 +373,7 @@ fn dashboard_state(cx: &mut RenderCx) -> DashboardState {
     let (rule_provider, set_rule_provider) = cx.use_state(String::new());
     let (rules_filter, set_rules_filter) = cx.use_state(String::new());
     let (connections_filter, set_connections_filter) = cx.use_state(String::new());
-    let (connection_selected, set_connection_selected) = cx.use_state(-1_i32);
+    let (connection_selected, set_connection_selected) = cx.use_state(String::new());
     let (action_busy, set_action_busy) = cx.use_async_state(false);
     let (logs_status, set_logs_status) = cx.use_async_state("Disconnected".to_owned());
     let (logs_level_filter, set_logs_level_filter) = cx.use_state("all".to_owned());

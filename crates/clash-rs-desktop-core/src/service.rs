@@ -214,6 +214,7 @@ pub mod pipe_transport {
     async fn open_client_with_retry(
         pipe_path: &str,
     ) -> anyhow::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+        const ERROR_PIPE_BUSY: i32 = 231;
         let started = std::time::Instant::now();
         let timeout = Duration::from_secs(5);
         let mut last_error = None;
@@ -221,9 +222,13 @@ pub mod pipe_transport {
         while started.elapsed() < timeout {
             match ClientOptions::new().open(pipe_path) {
                 Ok(client) => return Ok(client),
-                Err(error) => {
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                     last_error = Some(error);
                     tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(error) => {
+                    return Err(anyhow::Error::from(error)
+                        .context(format!("service pipe {pipe_path} is unavailable")));
                 }
             }
         }

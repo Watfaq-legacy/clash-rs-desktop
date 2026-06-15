@@ -1,6 +1,6 @@
 
 use crate::controller_endpoint::controller_client_config;
-use crate::runtime_actions::{describe_core_state, managed_runtime};
+use clash_rs_desktop_core::{ServiceCommand, ServiceResponse};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct OverviewSnapshot {
@@ -121,7 +121,7 @@ impl OverviewSnapshot {
             download_total: "-".to_owned(),
             upload_speed: "-".to_owned(),
             download_speed: "-".to_owned(),
-            lifecycle: lifecycle_status(),
+            lifecycle: "stopped".to_owned(),
         }
     }
 }
@@ -177,10 +177,22 @@ pub(crate) fn load_overview_snapshot() -> OverviewSnapshot {
     match runtime() {
         Ok(runtime) => runtime.block_on(async {
             let client = controller_client();
-            let version = client.get_version().await;
-            let configs = client.get_configs().await;
-            let memory = client.get_memory().await;
-            let connections = client.get_connections().await;
+            let timeout = std::time::Duration::from_secs(3);
+            let traffic_window = std::time::Duration::from_secs(2);
+            let (version, configs, memory, connections, traffic) = tokio::join!(
+                tokio::time::timeout(timeout, client.get_version()),
+                tokio::time::timeout(timeout, client.get_configs()),
+                tokio::time::timeout(timeout, client.get_memory()),
+                tokio::time::timeout(timeout, client.get_connections()),
+                client.sample_websocket_text("/ws/traffic", 1, traffic_window),
+            );
+            let version = version.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
+            let configs = configs.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
+            let memory = memory.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
+            let connections = connections.unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")));
+            let (upload_speed, download_speed) = parse_traffic_speeds(
+                traffic.ok().and_then(|messages| messages.into_iter().next()).as_deref(),
+            );
 
             let connected =
                 version.is_ok() || configs.is_ok() || memory.is_ok() || connections.is_ok();
@@ -245,9 +257,9 @@ pub(crate) fn load_overview_snapshot() -> OverviewSnapshot {
                     .ok()
                     .and_then(|value| value.download_total.map(format_bytes))
                     .unwrap_or_else(|| "-".to_owned()),
-                upload_speed: "-".to_owned(),
-                download_speed: "-".to_owned(),
-                lifecycle: lifecycle_status(),
+                upload_speed,
+                download_speed,
+                lifecycle: lifecycle_status().await,
             }
         }),
         Err(error) => OverviewSnapshot {
@@ -257,29 +269,15 @@ pub(crate) fn load_overview_snapshot() -> OverviewSnapshot {
     }
 }
 
-fn lifecycle_status() -> String {
-    match managed_runtime().lock() {
-        Ok(mut runtime) => {
-            if let Some(manager) = runtime.as_mut() {
-                let state = manager.state();
-                if !matches!(state, clash_rs_desktop_core::CoreState::Stopped) {
-                    return describe_core_state(&state);
-                }
-            }
-            orphan_core_status().unwrap_or_else(|| "stopped".to_owned())
-        }
-        Err(error) => format!("status unavailable ({error})"),
-    }
-}
-
-fn orphan_core_status() -> Option<String> {
-    let paths = crate::paths::reactor_paths().ok()?;
-    let pid = clash_rs_desktop_core::process::read_core_pid(&paths.core_pid_path())?;
-    if clash_rs_desktop_core::process::pid_is_alive(pid) {
-        Some(format!("running (orphan, pid: {pid})"))
-    } else {
-        clash_rs_desktop_core::process::clear_core_pid(&paths.core_pid_path());
-        None
+async fn lifecycle_status() -> String {
+    use clash_rs_desktop_core::pipe_transport::ServicePipeClient;
+    let client = ServicePipeClient::new(clash_rs_desktop_core::service::SERVICE_PIPE);
+    match client.send(&ServiceCommand::Status).await {
+        Ok(ServiceResponse::State { state }) => match state {
+            clash_rs_desktop_core::CoreState::Running { .. } => "running".to_owned(),
+            _ => "stopped".to_owned(),
+        },
+        _ => "stopped".to_owned(),
     }
 }
 
@@ -316,30 +314,6 @@ pub(crate) fn load_proxy_snapshot() -> ProxySnapshot {
             message: format!("Refresh proxies failed: {error}"),
             rows: Vec::new(),
         },
-    }
-}
-
-pub(crate) fn load_traffic_speed() -> (String, String) {
-    use crate::controller_actions::reactor_stream_messages;
-    match reactor_stream_messages("/ws/traffic", 30, 2) {
-        Ok(messages) => {
-            for line in messages.iter().rev() {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-                    let up = value.get("up").and_then(serde_json::Value::as_u64);
-                    let down = value.get("down").and_then(serde_json::Value::as_u64);
-                    if up.is_some() || down.is_some() {
-                        return (
-                            up.map(|v| format!("{}/s", format_bytes(v)))
-                                .unwrap_or_else(|| "-".to_owned()),
-                            down.map(|v| format!("{}/s", format_bytes(v)))
-                                .unwrap_or_else(|| "-".to_owned()),
-                        );
-                    }
-                }
-            }
-            ("-".to_owned(), "-".to_owned())
-        }
-        Err(_) => ("-".to_owned(), "-".to_owned()),
     }
 }
 
@@ -449,55 +423,7 @@ pub(crate) fn load_connections_snapshot() -> ConnectionsSnapshot {
     match runtime() {
         Ok(runtime) => runtime.block_on(async {
             match controller_client().get_connections().await {
-                Ok(response) => ConnectionsSnapshot {
-                    message: format!("Loaded {} active connections.", response.connections.len()),
-                    upload_total: response
-                        .upload_total
-                        .map(format_bytes)
-                        .unwrap_or_else(|| "-".to_owned()),
-                    download_total: response
-                        .download_total
-                        .map(format_bytes)
-                        .unwrap_or_else(|| "-".to_owned()),
-                    rows: response
-                        .connections
-                        .iter()
-                        .map(|connection| ConnectionRow {
-                            id: json_string(connection, "id"),
-                            host: nested_json_string(connection, &["metadata", "host"])
-                                .or_else(|| {
-                                    nested_json_string(connection, &["metadata", "destinationIP"])
-                                })
-                                .unwrap_or_else(|| "-".to_owned()),
-                            asn: nested_json_string(connection, &["metadata", "asn"])
-                                .or_else(|| {
-                                    nested_json_string(connection, &["metadata", "sourceIPASN"])
-                                })
-                                .unwrap_or_else(|| "-".to_owned()),
-                            process: nested_json_string(connection, &["metadata", "process"])
-                                .or_else(|| {
-                                    nested_json_string(connection, &["metadata", "processPath"])
-                                })
-                                .unwrap_or_else(|| "-".to_owned()),
-                            network: format!(
-                                "{}/{}",
-                                nested_json_string(connection, &["metadata", "network"])
-                                    .unwrap_or_else(|| "-".to_owned()),
-                                nested_json_string(connection, &["metadata", "type"])
-                                    .unwrap_or_else(|| "-".to_owned())
-                            ),
-                            rule: json_string(connection, "rule"),
-                            chains: json_array_join(connection, "chains"),
-                            upload: json_u64(connection, "upload")
-                                .map(format_bytes)
-                                .unwrap_or_else(|| "0 B".to_owned()),
-                            download: json_u64(connection, "download")
-                                .map(format_bytes)
-                                .unwrap_or_else(|| "0 B".to_owned()),
-                            duration: json_string(connection, "start"),
-                        })
-                        .collect(),
-                },
+                Ok(response) => connections_snapshot_from_response(response),
                 Err(error) => ConnectionsSnapshot {
                     message: format!("Refresh connections failed: {error}"),
                     upload_total: "-".to_owned(),
@@ -512,6 +438,65 @@ pub(crate) fn load_connections_snapshot() -> ConnectionsSnapshot {
             download_total: "-".to_owned(),
             rows: Vec::new(),
         },
+    }
+}
+
+/// Parse one `/connections` WebSocket frame (same JSON shape the REST endpoint
+/// returns) into a snapshot. Returns `None` when the frame isn't a valid
+/// connections payload so the caller can skip it rather than blank the table.
+pub(crate) fn connections_snapshot_from_ws_frame(frame: &str) -> Option<ConnectionsSnapshot> {
+    let response = serde_json::from_str::<clash_rs_desktop_core::ConnectionsResponse>(frame).ok()?;
+    Some(connections_snapshot_from_response(response))
+}
+
+fn connections_snapshot_from_response(
+    response: clash_rs_desktop_core::ConnectionsResponse,
+) -> ConnectionsSnapshot {
+    ConnectionsSnapshot {
+        message: format!("Loaded {} active connections.", response.connections.len()),
+        upload_total: response
+            .upload_total
+            .map(format_bytes)
+            .unwrap_or_else(|| "-".to_owned()),
+        download_total: response
+            .download_total
+            .map(format_bytes)
+            .unwrap_or_else(|| "-".to_owned()),
+        rows: response
+            .connections
+            .iter()
+            .map(connection_row_from_json)
+            .collect(),
+    }
+}
+
+fn connection_row_from_json(connection: &serde_json::Value) -> ConnectionRow {
+    ConnectionRow {
+        id: json_string(connection, "id"),
+        host: nested_json_string(connection, &["metadata", "host"])
+            .or_else(|| nested_json_string(connection, &["metadata", "destinationIP"]))
+            .unwrap_or_else(|| "-".to_owned()),
+        asn: nested_json_string(connection, &["metadata", "asn"])
+            .or_else(|| nested_json_string(connection, &["metadata", "sourceIPASN"]))
+            .unwrap_or_else(|| "-".to_owned()),
+        process: nested_json_string(connection, &["metadata", "process"])
+            .or_else(|| nested_json_string(connection, &["metadata", "processPath"]))
+            .unwrap_or_else(|| "-".to_owned()),
+        network: format!(
+            "{}/{}",
+            nested_json_string(connection, &["metadata", "network"])
+                .unwrap_or_else(|| "-".to_owned()),
+            nested_json_string(connection, &["metadata", "type"]).unwrap_or_else(|| "-".to_owned())
+        ),
+        rule: json_string(connection, "rule"),
+        chains: json_array_join(connection, "chains"),
+        upload: json_u64(connection, "upload")
+            .map(format_bytes)
+            .unwrap_or_else(|| "0 B".to_owned()),
+        download: json_u64(connection, "download")
+            .map(format_bytes)
+            .unwrap_or_else(|| "0 B".to_owned()),
+        duration: format_duration_since(&json_string(connection, "start")),
     }
 }
 
@@ -606,6 +591,36 @@ fn format_bytes(value: u64) -> String {
     }
 }
 
+/// Parse a single `/ws/traffic` frame (`{"up": <bytes/s>, "down": <bytes/s>}`)
+/// into display strings. Returns `("-", "-")` when no frame was sampled, e.g.
+/// because the core is offline or produced no traffic tick within the window.
+fn parse_traffic_speeds(frame: Option<&str>) -> (String, String) {
+    let Some(frame) = frame else {
+        return ("-".to_owned(), "-".to_owned());
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(frame) else {
+        return ("-".to_owned(), "-".to_owned());
+    };
+    let speed = |key: &str| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .map(|rate| format!("{}/s", format_bytes(rate)))
+            .unwrap_or_else(|| "-".to_owned())
+    };
+    (speed("up"), speed("down"))
+}
+
+/// Parse one `/ws/traffic` subscription frame into `(upload, download)` display
+/// strings. Returns `None` when the frame isn't valid traffic JSON so the
+/// caller can leave the last-known speeds in place instead of blanking them.
+pub(crate) fn traffic_speeds_from_ws_frame(frame: &str) -> Option<(String, String)> {
+    if serde_json::from_str::<serde_json::Value>(frame).is_err() {
+        return None;
+    }
+    Some(parse_traffic_speeds(Some(frame)))
+}
+
 fn json_string(value: &serde_json::Value, key: &str) -> String {
     value
         .get(key)
@@ -681,6 +696,41 @@ fn latest_delay(value: &serde_json::Value) -> String {
         .unwrap_or_else(|| "-".to_owned())
 }
 
+/// Render the elapsed time since an RFC 3339 `start` timestamp (the form the
+/// Clash controller emits for a connection's open time). Falls back to the raw
+/// string when it can't be parsed so no information is lost.
+fn format_duration_since(start: &str) -> String {
+    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+    let trimmed = start.trim();
+    if trimmed.is_empty() || trimmed == "-" {
+        return "-".to_owned();
+    }
+    let Ok(started) = OffsetDateTime::parse(trimmed, &Rfc3339) else {
+        return trimmed.to_owned();
+    };
+    let elapsed = OffsetDateTime::now_utc() - started;
+    let secs = elapsed.whole_seconds();
+    if secs < 0 {
+        return "0s".to_owned();
+    }
+    let (days, hours, minutes, seconds) = (
+        secs / 86_400,
+        (secs % 86_400) / 3_600,
+        (secs % 3_600) / 60,
+        secs % 60,
+    );
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 fn dns_type_name(value: u64) -> String {
     match value {
         1 => "A",
@@ -694,3 +744,156 @@ fn dns_type_name(value: u64) -> String {
     }
     .to_owned()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        connection_row_from_json, connections_snapshot_from_ws_frame, dns_type_name, format_bytes,
+        format_duration_since, json_array_join, json_string, latest_delay, nested_json_string,
+        parse_traffic_speeds, traffic_speeds_from_ws_frame,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn traffic_speeds_parse_up_and_down() {
+        let (up, down) = parse_traffic_speeds(Some(r#"{"up": 2048, "down": 1048576}"#));
+        assert_eq!(up, "2.0 KiB/s");
+        assert_eq!(down, "1.0 MiB/s");
+    }
+
+    #[test]
+    fn traffic_speeds_fall_back_when_absent_or_invalid() {
+        assert_eq!(parse_traffic_speeds(None), ("-".to_owned(), "-".to_owned()));
+        assert_eq!(
+            parse_traffic_speeds(Some("not json")),
+            ("-".to_owned(), "-".to_owned())
+        );
+    }
+
+    #[test]
+    fn traffic_ws_frame_rejects_non_json_but_accepts_valid() {
+        assert!(traffic_speeds_from_ws_frame("garbage").is_none());
+        let parsed = traffic_speeds_from_ws_frame(r#"{"up":0,"down":512}"#);
+        assert_eq!(parsed, Some(("0 B/s".to_owned(), "512 B/s".to_owned())));
+    }
+
+    #[test]
+    fn duration_blank_or_unparseable_is_preserved() {
+        assert_eq!(format_duration_since(""), "-");
+        assert_eq!(format_duration_since("-"), "-");
+        // Not RFC 3339 — fall back to the raw string rather than lying.
+        assert_eq!(format_duration_since("yesterday"), "yesterday");
+    }
+
+    #[test]
+    fn duration_in_the_future_clamps_to_zero() {
+        assert_eq!(format_duration_since("2999-01-01T00:00:00Z"), "0s");
+    }
+
+    #[test]
+    fn format_bytes_picks_unit_by_magnitude() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KiB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MiB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.00 GiB");
+    }
+
+    #[test]
+    fn dns_type_names_map_known_and_passthrough_unknown() {
+        assert_eq!(dns_type_name(1), "A");
+        assert_eq!(dns_type_name(28), "AAAA");
+        assert_eq!(dns_type_name(5), "CNAME");
+        // Unknown numeric types pass through as their number.
+        assert_eq!(dns_type_name(999), "999");
+    }
+
+    #[test]
+    fn json_string_returns_dash_for_missing_or_empty() {
+        let value = json!({ "present": "x", "blank": "" });
+        assert_eq!(json_string(&value, "present"), "x");
+        assert_eq!(json_string(&value, "blank"), "-");
+        assert_eq!(json_string(&value, "missing"), "-");
+    }
+
+    #[test]
+    fn nested_json_string_walks_path() {
+        let value = json!({ "metadata": { "host": "example.com" } });
+        assert_eq!(
+            nested_json_string(&value, &["metadata", "host"]).as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(nested_json_string(&value, &["metadata", "absent"]), None);
+        assert_eq!(nested_json_string(&value, &["nope", "host"]), None);
+    }
+
+    #[test]
+    fn json_array_join_uses_chain_separator() {
+        let value = json!({ "chains": ["proxy-a", "proxy-b"] });
+        assert_eq!(json_array_join(&value, "chains"), "proxy-a > proxy-b");
+        // Empty / missing arrays collapse to a dash.
+        assert_eq!(json_array_join(&json!({ "chains": [] }), "chains"), "-");
+        assert_eq!(json_array_join(&json!({}), "chains"), "-");
+    }
+
+    #[test]
+    fn latest_delay_reads_last_history_entry() {
+        let value = json!({ "history": [ { "delay": 100 }, { "delay": 240 } ] });
+        assert_eq!(latest_delay(&value), "240 ms");
+        // A zero delay is a timeout, not "0 ms".
+        assert_eq!(latest_delay(&json!({ "history": [ { "delay": 0 } ] })), "Timeout");
+        // No history at all.
+        assert_eq!(latest_delay(&json!({})), "-");
+    }
+
+    #[test]
+    fn connection_row_falls_back_through_metadata_keys() {
+        // host missing but destinationIP present; process missing but processPath present.
+        let value = json!({
+            "id": "conn-1",
+            "rule": "DOMAIN-SUFFIX",
+            "upload": 2048,
+            "download": 0,
+            "metadata": {
+                "destinationIP": "192.0.2.53",
+                "processPath": "C:/app.exe",
+                "network": "tcp",
+                "type": "HTTPS"
+            }
+        });
+        let row = connection_row_from_json(&value);
+        assert_eq!(row.id, "conn-1");
+        assert_eq!(row.host, "192.0.2.53");
+        assert_eq!(row.process, "C:/app.exe");
+        assert_eq!(row.network, "tcp/HTTPS");
+        assert_eq!(row.upload, "2.0 KiB");
+        assert_eq!(row.download, "0 B");
+        // No asn metadata at all → dash.
+        assert_eq!(row.asn, "-");
+    }
+
+    #[test]
+    fn connections_ws_frame_parses_full_snapshot() {
+        let frame = r#"{
+            "uploadTotal": 4096,
+            "downloadTotal": 1024,
+            "connections": [
+                { "id": "a", "metadata": { "host": "h1" } },
+                { "id": "b", "metadata": { "host": "h2" } }
+            ]
+        }"#;
+        let snapshot = connections_snapshot_from_ws_frame(frame).expect("valid frame");
+        assert_eq!(snapshot.rows.len(), 2);
+        assert_eq!(snapshot.rows[0].id, "a");
+        assert_eq!(snapshot.rows[0].host, "h1");
+        assert_eq!(snapshot.upload_total, "4.0 KiB");
+        assert_eq!(snapshot.download_total, "1.0 KiB");
+    }
+
+    #[test]
+    fn connections_ws_frame_rejects_garbage() {
+        assert!(connections_snapshot_from_ws_frame("not json").is_none());
+    }
+}
+
+
