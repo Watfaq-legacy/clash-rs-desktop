@@ -537,13 +537,20 @@ fn setup_panel(
             ))
             .spacing(10.0),
             hstack((
+                button("Get core")
+                    .icon(SymbolGlyph::Download)
+                    .on_click({
+                        let set_selected_page = set_selected_page.clone();
+                        move || set_selected_page.call("settings".to_owned())
+                    })
+                    .accent(),
                 button("Manage profiles")
                     .icon(SymbolGlyph::Favorite)
                     .on_click({
                         let set_selected_page = set_selected_page.clone();
                         move || set_selected_page.call("profiles".to_owned())
                     })
-                    .accent(),
+                    .subtle(),
                 button("Open settings")
                     .icon(SymbolGlyph::Setting)
                     .on_click({

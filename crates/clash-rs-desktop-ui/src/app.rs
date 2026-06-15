@@ -554,12 +554,16 @@ fn settings_state(cx: &mut RenderCx) -> SettingsState {
     let (proxy_bypass, set_proxy_bypass) = cx.use_state(initial_settings.proxy_bypass);
     let (controller_endpoint, set_controller_endpoint) = cx.use_state(controller_inputs.endpoint);
     let (controller_secret, set_controller_secret) = cx.use_state(controller_inputs.secret);
+    let (core_status, set_core_status) =
+        cx.use_async_state(crate::update_actions::reactor_core_status_text());
 
     SettingsState {
         update_channel,
         set_update_channel,
         auto_check,
         set_auto_check,
+        core_status,
+        set_core_status,
         tun_policy,
         set_tun_policy,
         proxy_host,

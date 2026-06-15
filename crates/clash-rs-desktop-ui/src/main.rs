@@ -17,6 +17,8 @@ mod service_actions;
 #[cfg(all(windows, feature = "reactor"))]
 mod settings_actions;
 #[cfg(all(windows, feature = "reactor"))]
+mod update_actions;
+#[cfg(all(windows, feature = "reactor"))]
 mod views;
 
 #[cfg(all(windows, feature = "reactor"))]

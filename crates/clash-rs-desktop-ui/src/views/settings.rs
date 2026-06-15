@@ -7,8 +7,11 @@ use crate::settings_actions::{
     reactor_set_tun_policy_text, reactor_set_update_channel_text,
     reactor_toggle_auto_check_text,
 };
+use crate::update_actions::{
+    reactor_check_core_update_text, reactor_core_status_text, reactor_download_core_text,
+};
 use crate::views::dashboard::report_action;
-use crate::views::design::{ToastQueue, section, settings_row, spacing};
+use crate::views::design::{ToastQueue, section, selectable_text, settings_row, spacing, toolbar};
 use crate::views::output::{SafetyState, confirm_label, guarded_action};
 
 #[derive(Clone)]
@@ -17,6 +20,8 @@ pub(crate) struct SettingsState {
     pub(crate) set_update_channel: SetState<i32>,
     pub(crate) auto_check: bool,
     pub(crate) set_auto_check: SetState<bool>,
+    pub(crate) core_status: String,
+    pub(crate) set_core_status: AsyncSetState<String>,
     pub(crate) tun_policy: i32,
     pub(crate) set_tun_policy: SetState<i32>,
     pub(crate) proxy_host: String,
@@ -40,7 +45,7 @@ pub(crate) fn settings_section(
         section(
             "Updates",
             Some("Choose how the bundled core is fetched and applied."),
-            update_settings_rows(state),
+            update_settings_rows(state, toasts),
         ),
         section(
             "TUN launch policy",
@@ -62,7 +67,7 @@ pub(crate) fn settings_section(
     .into()
 }
 
-fn update_settings_rows(state: &SettingsState) -> Element {
+fn update_settings_rows(state: &SettingsState, toasts: &ToastQueue) -> Element {
     vstack((
         settings_row(
             "Update channel",
@@ -83,8 +88,8 @@ fn update_settings_rows(state: &SettingsState) -> Element {
                 .into(),
         ),
         settings_row(
-            "Automatic update checks",
-            "Periodically poll for newer core builds in the background.",
+            "Remember update preference",
+            "Save your channel choice for future update checks.",
             ToggleSwitch::new(state.auto_check)
                 .on_content("On")
                 .off_content("Off")
@@ -99,6 +104,58 @@ fn update_settings_rows(state: &SettingsState) -> Element {
                 })
                 .into(),
         ),
+        core_version_row(state, toasts),
+    ))
+    .spacing(spacing::SM)
+    .into()
+}
+
+/// Installed-core status plus the actions that make the update settings real:
+/// check GitHub for the latest build, and download / install it. This is the
+/// only in-app path to obtain `clash-rs.exe`, so a fresh install starts here.
+fn core_version_row(state: &SettingsState, toasts: &ToastQueue) -> Element {
+    vstack((
+        border(selectable_text(&state.core_status, 13.0))
+            .padding(Thickness::xy(spacing::MD, spacing::SM))
+            .corner_radius(6.0)
+            .background(tokens::SubtleFill)
+            .border_brush(tokens::CardStroke)
+            .border_thickness(Thickness::uniform(1.0)),
+        toolbar(hstack((
+            button("Check for updates")
+                .icon(SymbolGlyph::Sync)
+                .on_click({
+                    let set_core_status = state.set_core_status.clone();
+                    let toasts = toasts.clone();
+                    move || {
+                        let set_core_status = set_core_status.clone();
+                        let toasts = toasts.clone();
+                        std::thread::spawn(move || {
+                            let result = reactor_check_core_update_text();
+                            report_action(&toasts, "Core update check", &result);
+                            set_core_status.call(reactor_core_status_text());
+                        });
+                    }
+                })
+                .subtle(),
+            button("Download / install core")
+                .icon(SymbolGlyph::Download)
+                .on_click({
+                    let set_core_status = state.set_core_status.clone();
+                    let toasts = toasts.clone();
+                    move || {
+                        let set_core_status = set_core_status.clone();
+                        let toasts = toasts.clone();
+                        std::thread::spawn(move || {
+                            let result = reactor_download_core_text();
+                            report_action(&toasts, "Core download", &result);
+                            set_core_status.call(reactor_core_status_text());
+                        });
+                    }
+                })
+                .accent(),
+        ))
+        .spacing(spacing::SM)),
     ))
     .spacing(spacing::SM)
     .into()
