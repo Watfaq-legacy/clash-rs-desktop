@@ -22,7 +22,7 @@ use crate::{
             DashboardState, connections_page, dns_page, flows_page, logs_page, overview_page,
             providers_page, proxies_page, rules_page, start_page_subscription,
         },
-        design::{Toast, ToastQueue, busy_strip, toast_stack},
+        design::{Toast, ToastQueue, busy_strip, spacing, toast_stack},
         output::SafetyState,
         profiles::{ProfilesState, profiles_section},
         service::{ServiceState, service_toolbar},
@@ -169,11 +169,10 @@ fn app_workspace(
                 set_selected_page,
             ),
         ))
-        .spacing(18.0)
-        .padding(Thickness::uniform(24.0)),
+        .spacing(spacing::LG + 2.0)
+        .padding(Thickness::uniform(spacing::XXL)),
     )
     .vertical_scroll_bar_visibility(ScrollViewScrollBarVisibility::Visible)
-    .background(tokens::LayerFill)
     .into()
 }
 

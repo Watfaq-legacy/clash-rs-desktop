@@ -29,6 +29,7 @@ fn main() -> Result<()> {
     App::new()
         .title("clash-rs desktop")
         .inner_size(1180.0, 760.0)
+        .backdrop(Backdrop::Mica)
         .render(app::app)
 }
 
