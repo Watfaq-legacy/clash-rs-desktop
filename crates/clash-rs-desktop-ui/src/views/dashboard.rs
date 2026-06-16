@@ -23,8 +23,8 @@ use crate::runtime_actions::{
 use crate::views::{
     design::{
         HAIRLINE, Tone, ToastQueue, empty_state as design_empty_state, hero_card, latency_color,
-        metric_card, metric_grid, palette, radius, section, selectable_text, spacing, stat_card,
-        status_pill, toolbar, type_scale,
+        metric_card, metric_grid, palette, radius, section, segmented, selectable_text, spacing,
+        stat_card, status_pill, toolbar, type_scale,
     },
     output::{SafetyState, confirm_label, guarded_action},
 };
@@ -1629,15 +1629,20 @@ fn config_editor(state: &DashboardState) -> Element {
     let bind_address = state.config_bind_address.clone();
     vstack((
         hstack((
-            RadioButtons::new(["Rule", "Global", "Direct"])
-                .header("Mode")
-                .selected_index(choice_index(&mode, &["rule", "global", "direct"]))
-                .max_columns(3)
-                .on_selection_changed({
-                    let set_config_mode = state.set_config_mode.clone();
-                    move |index| set_choice(index, &["rule", "global", "direct"], &set_config_mode)
-                })
-                .width(360.0),
+            vstack((
+                text_block("Mode")
+                    .font_size(type_scale::CAPTION)
+                    .foreground(tokens::SecondaryText),
+                segmented(
+                    &[("rule", "Rule"), ("global", "Global"), ("direct", "Direct")],
+                    &mode,
+                    {
+                        let set_config_mode = state.set_config_mode.clone();
+                        move |value| set_config_mode.call(value)
+                    },
+                ),
+            ))
+            .spacing(spacing::XS),
             ComboBox::new(["info", "warning", "error", "debug", "trace", "silent"])
                 .header("Log level")
                 .placeholder("Log level")

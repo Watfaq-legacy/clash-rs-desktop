@@ -256,7 +256,33 @@ pub(crate) fn stat_card(
         .into()
 }
 
-/// Lay metric cards out in a single row of equal-width (star-sized) columns so
+// ---------------------------------------------------------------------------
+// Segmented control — a connected row of mutually-exclusive choices
+// ---------------------------------------------------------------------------
+//
+// For a small fixed set of options (≤4), this beats a dropdown: every option
+// and the current selection are visible, and switching is one click. The active
+// option is the accent button, the rest are subtle. Controlled — the caller
+// passes the currently-selected value, so it always reflects real state (unlike
+// the native SelectorBar binding, which can't be set programmatically).
+
+pub(crate) fn segmented<F>(options: &[(&str, &str)], selected: &str, on_select: F) -> Element
+where
+    F: Fn(String) + Clone + 'static,
+{
+    let buttons: Vec<Element> = options
+        .iter()
+        .map(|(value, label)| {
+            let value = (*value).to_owned();
+            let is_active = value.eq_ignore_ascii_case(selected.trim());
+            let on_select = on_select.clone();
+            let b = button((*label).to_owned()).on_click(move || on_select(value.clone()));
+            if is_active { b.accent() } else { b.subtle() }.into()
+        })
+        .collect();
+    hstack(buttons).spacing(spacing::XS).into()
+}
+
 /// the strip fills the available width and the cards shrink together instead of
 /// overflowing off the right edge on a narrow window (the old fixed-width
 /// `hstack` couldn't give). Cards keep a `min_width` floor.
