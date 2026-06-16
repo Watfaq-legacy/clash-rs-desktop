@@ -22,7 +22,7 @@ use crate::{
             DashboardState, connections_page, dns_page, flows_page, logs_page, overview_page,
             providers_page, proxies_page, rules_page, start_page_subscription,
         },
-        design::{Toast, ToastQueue, busy_strip, toast_stack, type_scale},
+        design::{Toast, ToastQueue, busy_strip, toast_stack},
         output::SafetyState,
         profiles::{ProfilesState, profiles_section},
         service::{ServiceState, service_toolbar},
@@ -158,7 +158,6 @@ fn app_workspace(
         vstack((
             busy_strip(dashboard_state.action_busy),
             toast_stack(toast_queue),
-            page_subtitle(page_description(selected_page)),
             page_content(
                 selected_page,
                 dashboard_state,
@@ -176,13 +175,6 @@ fn app_workspace(
     .vertical_scroll_bar_visibility(ScrollViewScrollBarVisibility::Visible)
     .background(tokens::LayerFill)
     .into()
-}
-
-fn page_subtitle(description: impl Into<String>) -> Element {
-    text_block(description.into())
-        .font_size(type_scale::CAPTION)
-        .foreground(tokens::SecondaryText)
-        .into()
 }
 
 fn page_content(
@@ -297,24 +289,6 @@ fn page_title(tag: &str) -> String {
         "settings" => "Settings",
         "service" => "Windows Service",
         _ => "Overview",
-    }
-    .to_owned()
-}
-
-fn page_description(tag: &str) -> String {
-    match tag {
-        "overview" => "Runtime health, traffic, profile readiness, and core controls.",
-        "proxies" => "Switch selectors, inspect latency, and manage proxy choices.",
-        "providers" => "Refresh subscriptions, run health checks, and inspect provider inventory.",
-        "rules" => "Search active rules and test rule-provider matches.",
-        "connections" => "Monitor active sessions and close noisy traffic.",
-        "flows" => "Inspect live flow snapshots, totals, and destination trends.",
-        "dns" => "Query the Clash DNS resolver and inspect answer records.",
-        "logs" => "Inspect live controller logs with filtering and bounded history.",
-        "profiles" => "Add profiles, choose the active profile, and manage overrides.",
-        "settings" => "Configure updates, proxy integration, overrides, and TUN policy.",
-        "service" => "Manage the elevated Windows service used for TUN and privileged launch.",
-        _ => "Runtime health and quick actions.",
     }
     .to_owned()
 }

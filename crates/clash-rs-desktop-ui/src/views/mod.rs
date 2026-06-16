@@ -1,3 +1,4 @@
+pub(crate) mod chart;
 pub(crate) mod dashboard;
 pub(crate) mod design;
 pub(crate) mod output;

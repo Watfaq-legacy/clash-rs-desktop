@@ -621,6 +621,18 @@ pub(crate) fn traffic_speeds_from_ws_frame(frame: &str) -> Option<(String, Strin
     Some(parse_traffic_speeds(Some(frame)))
 }
 
+/// Parse one `/ws/traffic` frame into raw `(up_bytes_per_sec, down_bytes_per_sec)`
+/// for charting. Returns `None` on a malformed frame.
+pub(crate) fn traffic_bytes_from_ws_frame(frame: &str) -> Option<(u64, u64)> {
+    let value = serde_json::from_str::<serde_json::Value>(frame).ok()?;
+    let up = value.get("up").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let down = value
+        .get("down")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    Some((up, down))
+}
+
 fn json_string(value: &serde_json::Value, key: &str) -> String {
     value
         .get(key)

@@ -14,15 +14,17 @@ use crate::controller_models::{
     ConnectionRow, ConnectionsSnapshot, DnsSnapshot, OverviewSnapshot, ProviderSnapshot,
     ProxySnapshot, ProxyRow, RulesSnapshot, connections_snapshot_from_ws_frame,
     load_connections_snapshot, load_dns_snapshot, load_overview_snapshot, load_provider_snapshot,
-    load_proxy_snapshot, load_rules_snapshot, traffic_speeds_from_ws_frame,
+    load_proxy_snapshot, load_rules_snapshot, traffic_bytes_from_ws_frame,
+    traffic_speeds_from_ws_frame,
 };
 use crate::runtime_actions::{
     reactor_restart_core_text, reactor_start_core_text, reactor_stop_core_text,
 };
 use crate::views::{
     design::{
-        HAIRLINE, Tone, ToastQueue, empty_state as design_empty_state, hero_card, metric_card,
-        metric_grid, radius, section, selectable_text, spacing, status_pill, toolbar, type_scale,
+        HAIRLINE, Tone, ToastQueue, empty_state as design_empty_state, hero_card, latency_color,
+        metric_card, metric_grid, palette, radius, section, selectable_text, spacing, stat_card,
+        status_pill, toolbar, type_scale,
     },
     output::{SafetyState, confirm_label, guarded_action},
 };
@@ -256,6 +258,9 @@ fn spawn_traffic_subscription(state: &DashboardState) -> tokio::sync::watch::Sen
         cache_overview_snapshot(&base);
         set_overview.call(base);
         let result = reactor_subscribe_messages("/ws/traffic", move |frame| {
+            if let Some((up, down)) = traffic_bytes_from_ws_frame(&frame) {
+                crate::views::chart::push_traffic_sample(up, down);
+            }
             let Some((upload, download)) = traffic_speeds_from_ws_frame(&frame) else {
                 return;
             };
@@ -367,9 +372,11 @@ pub(crate) fn overview_page(
     safety: &SafetyState,
     toasts: &ToastQueue,
 ) -> Element {
+    let samples = crate::views::chart::traffic_samples();
     vstack((
         overview_hero(state, toasts),
         metric_strip(state),
+        crate::views::chart::traffic_chart(&samples, 900.0),
         section(
             "Runtime configuration",
             Some("Patch the live core or hot-reload from a different config path."),
@@ -455,12 +462,13 @@ fn core_status_display(state: &DashboardState) -> (String, windows_reactor::Them
 }
 
 fn metric_strip(state: &DashboardState) -> Element {
+    let o = &state.overview;
+    let conn_subtext = format!("↑ {}  ↓ {}", o.upload_total, o.download_total);
     metric_grid(vec![
-        metric_card("Upload", &state.overview.upload_speed, "Live throughput"),
-        metric_card("Download", &state.overview.download_speed, "Live throughput"),
-        metric_card("Memory", &state.overview.memory, "Resident set"),
-        metric_card("Connections", &state.overview.connections, "Active flows"),
-        metric_card("Mixed Port", &state.overview.mixed_port, "Listening on"),
+        stat_card("Upload", &o.upload_speed, Some("Live throughput"), palette::BLUE),
+        stat_card("Download", &o.download_speed, Some("Live throughput"), palette::GREEN),
+        stat_card("Connections", &o.connections, Some(&conn_subtext), palette::AMBER),
+        stat_card("Memory", &o.memory, Some("Resident set"), palette::PURPLE),
     ])
 }
 
@@ -613,14 +621,39 @@ fn proxy_static_table(rows: &[&ProxyRow]) -> Element {
         out.push(empty_row("No static proxies."));
     } else {
         for proxy in rows.iter().take(60) {
-            out.push(table_row_cols(vec![
-                (proxy.name.clone(), 220.0),
-                (proxy.proxy_type.clone(), 120.0),
-                (proxy.delay.clone(), 100.0),
-            ]));
+            out.push(
+                hstack((
+                    text_block(truncate_cell(&proxy.name).0)
+                        .font_size(type_scale::CAPTION)
+                        .width(220.0),
+                    text_block(proxy.proxy_type.clone())
+                        .font_size(type_scale::CAPTION)
+                        .width(120.0),
+                    delay_cell(&proxy.delay).width(100.0),
+                ))
+                .spacing(spacing::SM)
+                .into(),
+            );
         }
     }
     table_panel(out)
+}
+
+/// A delay cell colored by latency health (green/amber/red). Falls back to muted
+/// text for non-numeric values like "Timeout" or "-".
+fn delay_cell(delay: &str) -> windows_reactor::TextBlock {
+    let ms = delay
+        .split_whitespace()
+        .next()
+        .and_then(|n| n.parse::<u64>().ok());
+    match ms {
+        Some(value) => text_block(delay.to_owned())
+            .font_size(type_scale::CAPTION)
+            .foreground(latency_color(Some(value))),
+        None => text_block(delay.to_owned())
+            .font_size(type_scale::CAPTION)
+            .foreground(tokens::TertiaryText),
+    }
 }
 
 pub(crate) fn providers_page(state: &DashboardState) -> Element {

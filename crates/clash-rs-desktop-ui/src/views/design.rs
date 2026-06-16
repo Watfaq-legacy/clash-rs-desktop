@@ -65,6 +65,40 @@ pub(crate) mod radius {
 pub(crate) const HAIRLINE: f64 = 1.0;
 
 // ---------------------------------------------------------------------------
+// Brand palette — fixed accent colors beyond the stock WinUI theme tokens
+// ---------------------------------------------------------------------------
+//
+// The framework only fills with `Brush::Solid(Color)` (no gradients), so these
+// are flat accent colors used for stat-card accents, the traffic chart series,
+// and latency tiers. Values mirror the reference dashboard's palette.
+
+pub(crate) mod palette {
+    use windows_reactor::Color;
+
+    pub(crate) const BLUE: Color = Color::rgb(0x00, 0x71, 0xE3);
+    pub(crate) const GREEN: Color = Color::rgb(0x34, 0xC7, 0x59);
+    pub(crate) const AMBER: Color = Color::rgb(0xFF, 0x95, 0x00);
+    pub(crate) const PURPLE: Color = Color::rgb(0xAF, 0x52, 0xDE);
+    pub(crate) const RED: Color = Color::rgb(0xFF, 0x3B, 0x30);
+    /// Upload series (lighter blue, reads on a dark chart panel).
+    pub(crate) const CHART_UP: Color = Color::rgb(0x60, 0xA5, 0xFA);
+    /// Download series (lighter green).
+    pub(crate) const CHART_DOWN: Color = Color::rgb(0x34, 0xD3, 0x99);
+    /// Dark chart panel background.
+    pub(crate) const CHART_PANEL: Color = Color::rgb(0x14, 0x1C, 0x26);
+}
+
+/// Color a latency (ms) by health tier: green <100, amber <300, red otherwise.
+/// `None`/timeouts read as the critical tier.
+pub(crate) fn latency_color(ms: Option<u64>) -> windows_reactor::Color {
+    match ms {
+        Some(d) if d > 0 && d < 100 => palette::GREEN,
+        Some(d) if d > 0 && d < 300 => palette::AMBER,
+        _ => palette::RED,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Section card — title + optional subtitle + content
 // ---------------------------------------------------------------------------
 
@@ -166,6 +200,60 @@ pub(crate) fn metric_card(label: &str, value: &str, caption: &str) -> Element {
     .min_width(140.0)
     .horizontal_alignment(HorizontalAlignment::Stretch)
     .into()
+}
+
+/// A small filled circle used as a liveness / accent indicator next to a label.
+pub(crate) fn status_dot(color: windows_reactor::Color) -> Element {
+    Shape::ellipse()
+        .fill(color)
+        .width(8.0)
+        .height(8.0)
+        .into()
+}
+
+/// Richer stat card (Overview): an accent dot + uppercase label on top, a large
+/// value, and an optional subtext line. The accent color ties the card to its
+/// concept (upload=blue, download=green, …) the way the reference's icon badges
+/// do — done with a solid dot since the framework can't render Lucide icons or
+/// gradient fills.
+pub(crate) fn stat_card(
+    label: &str,
+    value: &str,
+    subtext: Option<&str>,
+    accent: windows_reactor::Color,
+) -> Element {
+    let mut col: Vec<Element> = vec![
+        hstack((
+            status_dot(accent),
+            text_block(label.to_uppercase())
+                .font_size(type_scale::CAPTION)
+                .bold()
+                .foreground(tokens::SecondaryText),
+        ))
+        .spacing(spacing::SM)
+        .into(),
+        text_block(value.to_owned())
+            .font_size(type_scale::METRIC)
+            .bold()
+            .into(),
+    ];
+    if let Some(sub) = subtext {
+        col.push(
+            text_block(sub.to_owned())
+                .font_size(type_scale::CAPTION)
+                .foreground(tokens::TertiaryText)
+                .into(),
+        );
+    }
+    border(vstack(col).spacing(spacing::SM))
+        .padding(Thickness::uniform(spacing::LG))
+        .corner_radius(radius::MD)
+        .background(tokens::CardBackground)
+        .border_brush(tokens::CardStroke)
+        .border_thickness(Thickness::uniform(HAIRLINE))
+        .min_width(150.0)
+        .horizontal_alignment(HorizontalAlignment::Stretch)
+        .into()
 }
 
 /// Lay metric cards out in a single row of equal-width (star-sized) columns so
