@@ -22,7 +22,7 @@ use crate::{
             DashboardState, connections_page, dns_page, flows_page, logs_page, overview_page,
             providers_page, proxies_page, rules_page, start_page_subscription,
         },
-        design::{Toast, ToastQueue, busy_strip, toast_stack},
+        design::{Toast, ToastQueue, busy_strip, toast_stack, type_scale},
         output::SafetyState,
         profiles::{ProfilesState, profiles_section},
         service::{ServiceState, service_toolbar},
@@ -180,7 +180,7 @@ fn app_workspace(
 
 fn page_subtitle(description: impl Into<String>) -> Element {
     text_block(description.into())
-        .font_size(13.0)
+        .font_size(type_scale::CAPTION)
         .foreground(tokens::SecondaryText)
         .into()
 }
@@ -193,16 +193,10 @@ fn page_content(
     service_state: &ServiceState,
     safety_state: &SafetyState,
     toast_queue: &ToastQueue,
-    set_selected_page: SetState<String>,
+    _set_selected_page: SetState<String>,
 ) -> Element {
     match selected_page {
-        "overview" => overview_page(
-            dashboard_state,
-            profiles_state,
-            set_selected_page,
-            safety_state,
-            toast_queue,
-        ),
+        "overview" => overview_page(dashboard_state, safety_state, toast_queue),
         "proxies" => proxies_page(dashboard_state),
         "providers" => providers_page(dashboard_state),
         "rules" => rules_page(dashboard_state),
@@ -213,13 +207,7 @@ fn page_content(
         "profiles" => profiles_section(profiles_state, safety_state, toast_queue),
         "settings" => settings_section(settings_state, safety_state, toast_queue),
         "service" => service_toolbar(service_state, safety_state, toast_queue),
-        _ => overview_page(
-            dashboard_state,
-            profiles_state,
-            set_selected_page,
-            safety_state,
-            toast_queue,
-        ),
+        _ => overview_page(dashboard_state, safety_state, toast_queue),
     }
 }
 

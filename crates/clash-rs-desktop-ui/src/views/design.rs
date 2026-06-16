@@ -350,25 +350,6 @@ pub(crate) fn hero_card(
 }
 
 // ---------------------------------------------------------------------------
-// Pill badge — small rounded chip (e.g. a numbered/checked step indicator)
-// ---------------------------------------------------------------------------
-
-pub(crate) fn pill_badge(label: impl Into<String>, fill: ThemeRef) -> Element {
-    border(
-        text_block(label.into())
-            .font_size(type_scale::BODY)
-            .bold()
-            .foreground(tokens::CardBackground),
-    )
-    .padding(Thickness::xy(spacing::SM + 2.0, spacing::XS))
-    .corner_radius(radius::LG + 2.0)
-    .background(fill.clone())
-    .border_brush(fill)
-    .border_thickness(Thickness::uniform(HAIRLINE))
-    .into()
-}
-
-// ---------------------------------------------------------------------------
 // Toast — single transient notification rendered by the app shell
 // ---------------------------------------------------------------------------
 

@@ -22,11 +22,9 @@ use crate::runtime_actions::{
 use crate::views::{
     design::{
         HAIRLINE, Tone, ToastQueue, empty_state as design_empty_state, hero_card, metric_card,
-        metric_grid, pill_badge, radius, section, selectable_text, spacing, status_pill, toolbar,
-        type_scale,
+        metric_grid, radius, section, selectable_text, spacing, status_pill, toolbar, type_scale,
     },
     output::{SafetyState, confirm_label, guarded_action},
-    profiles::ProfilesState,
 };
 
 pub(crate) fn looks_like_failure(text: &str) -> bool {
@@ -366,25 +364,21 @@ fn with_buffer<T>(cell: &OnceLock<Mutex<Vec<String>>>, f: impl FnOnce(&mut Vec<S
 
 pub(crate) fn overview_page(
     state: &DashboardState,
-    profiles: &ProfilesState,
-    set_selected_page: SetState<String>,
     safety: &SafetyState,
     toasts: &ToastQueue,
 ) -> Element {
-    let setup = setup_panel(state, profiles, set_selected_page);
-    let mut sections: Vec<Element> = vec![
-        overview_hero(state, toasts).into(),
-        metric_strip(state).into(),
-    ];
-    if !matches!(setup, Element::Empty) {
-        sections.push(setup);
-    }
-    sections.push(section(
-        "Runtime configuration",
-        Some("Patch the live core or hot-reload from a different config path."),
-        vstack((config_editor(state), config_actions(state, safety, toasts))).spacing(spacing::MD_LG),
-    ));
-    vstack(sections).spacing(spacing::MD_LG).into()
+    vstack((
+        overview_hero(state, toasts),
+        metric_strip(state),
+        section(
+            "Runtime configuration",
+            Some("Patch the live core or hot-reload from a different config path."),
+            vstack((config_editor(state), config_actions(state, safety, toasts)))
+                .spacing(spacing::MD_LG),
+        ),
+    ))
+    .spacing(spacing::MD_LG)
+    .into()
 }
 
 fn overview_hero(state: &DashboardState, toasts: &ToastQueue) -> Element {
@@ -468,112 +462,6 @@ fn metric_strip(state: &DashboardState) -> Element {
         metric_card("Connections", &state.overview.connections, "Active flows"),
         metric_card("Mixed Port", &state.overview.mixed_port, "Listening on"),
     ])
-}
-
-fn setup_panel(
-    state: &DashboardState,
-    profiles: &ProfilesState,
-    set_selected_page: SetState<String>,
-) -> Element {
-    let profile_ready = !profiles.profile_items.is_empty()
-        && !profiles
-            .profile_items
-            .iter()
-            .any(|item| item == "No profiles configured");
-    let core_ready = state.overview.version != "Offline" && state.overview.version != "-";
-    if core_ready && profile_ready && state.overview.connected {
-        return Element::Empty;
-    }
-    section(
-        "Get started",
-        Some("Finish these steps to bring the core online."),
-        vstack((
-            hstack((
-                setup_step(
-                    "1",
-                    if core_ready {
-                        "Core detected"
-                    } else {
-                        "Install or apply a core update"
-                    },
-                    core_ready,
-                ),
-                setup_step(
-                    "2",
-                    if profile_ready {
-                        "Profile configured"
-                    } else {
-                        "Add a profile"
-                    },
-                    profile_ready,
-                ),
-                setup_step(
-                    "3",
-                    if state.overview.connected {
-                        "Controller reachable"
-                    } else {
-                        "Start and refresh"
-                    },
-                    state.overview.connected,
-                ),
-            ))
-            .spacing(spacing::SM + 2.0),
-            hstack((
-                button("Get core")
-                    .icon(SymbolGlyph::Download)
-                    .on_click({
-                        let set_selected_page = set_selected_page.clone();
-                        move || set_selected_page.call("settings".to_owned())
-                    })
-                    .accent(),
-                button("Manage profiles")
-                    .icon(SymbolGlyph::Favorite)
-                    .on_click({
-                        let set_selected_page = set_selected_page.clone();
-                        move || set_selected_page.call("profiles".to_owned())
-                    })
-                    .subtle(),
-                button("Open settings")
-                    .icon(SymbolGlyph::Setting)
-                    .on_click({
-                        let set_selected_page = set_selected_page.clone();
-                        move || set_selected_page.call("settings".to_owned())
-                    })
-                    .subtle(),
-                button("Configure service")
-                    .icon(SymbolGlyph::People)
-                    .on_click({
-                        let set_selected_page = set_selected_page.clone();
-                        move || set_selected_page.call("service".to_owned())
-                    })
-                    .subtle(),
-            ))
-            .spacing(spacing::SM),
-        ))
-        .spacing(spacing::MD),
-    )
-}
-
-fn setup_step(number: &'static str, label: impl Into<String>, ok: bool) -> Element {
-    let badge_fill = if ok {
-        tokens::SystemSuccess
-    } else {
-        tokens::SystemAttention
-    };
-    border(
-        hstack((
-            pill_badge(if ok { "✓" } else { number }, badge_fill),
-            text_block(label.into()).font_size(type_scale::BODY),
-        ))
-        .spacing(spacing::SM + 2.0),
-    )
-    .padding(Thickness::uniform(spacing::MD))
-    .corner_radius(radius::SM)
-    .background(tokens::SubtleFill)
-    .border_brush(tokens::CardStroke)
-    .border_thickness(Thickness::uniform(HAIRLINE))
-    .width(260.0)
-    .into()
 }
 
 pub(crate) fn proxies_page(state: &DashboardState) -> Element {
@@ -1685,10 +1573,26 @@ fn effective_str<'a>(local: &'a str, snapshot: &'a str) -> &'a str {
     }
 }
 
+/// Like [`effective_str`] but falls back to `default` when neither the local
+/// edit nor the live snapshot has a usable value. Without this, the config
+/// controls render blank/unselected whenever the core is offline (the snapshot
+/// is `"-"`), so a fresh app shows empty Mode/Log/Port fields instead of the
+/// values the core actually ships with.
+fn effective_or_default(local: &str, snapshot: &str, default: &str) -> String {
+    let effective = effective_str(local, snapshot);
+    if effective.is_empty() {
+        default.to_owned()
+    } else {
+        effective.to_owned()
+    }
+}
+
 fn config_editor(state: &DashboardState) -> Element {
-    let mode = effective_str(&state.config_mode, &state.overview.mode).to_owned();
-    let log_level = effective_str(&state.config_log_level, &state.overview.log_level).to_owned();
-    let mixed_port = effective_str(&state.config_mixed_port, &state.overview.mixed_port).to_owned();
+    let mode = effective_or_default(&state.config_mode, &state.overview.mode, "rule");
+    let log_level =
+        effective_or_default(&state.config_log_level, &state.overview.log_level, "info");
+    let mixed_port =
+        effective_or_default(&state.config_mixed_port, &state.overview.mixed_port, "7890");
     let bind_address = state.config_bind_address.clone();
     vstack((
         hstack((
@@ -2246,9 +2150,9 @@ fn format_bytes_approx(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        choice_index, effective_str, filtered_logs, flow_totals, format_bytes_approx,
-        is_plausible_connection_id, looks_like_failure, matches_filter, parse_flow_rows,
-        parse_on_off, trim_tail, truncate_cell,
+        choice_index, effective_or_default, effective_str, filtered_logs, flow_totals,
+        format_bytes_approx, is_plausible_connection_id, looks_like_failure, matches_filter,
+        parse_flow_rows, parse_on_off, trim_tail, truncate_cell,
     };
 
     #[test]
@@ -2345,6 +2249,17 @@ mod tests {
         // ...unless the snapshot is a placeholder dash or blank.
         assert_eq!(effective_str("", "-"), "");
         assert_eq!(effective_str("", "   "), "");
+    }
+
+    #[test]
+    fn effective_or_default_fills_blank_controls() {
+        // Local edit always wins.
+        assert_eq!(effective_or_default("global", "rule", "rule"), "global");
+        // Live snapshot used when no local edit.
+        assert_eq!(effective_or_default("", "direct", "rule"), "direct");
+        // Both blank/offline → the shipped default, never an empty control.
+        assert_eq!(effective_or_default("", "-", "rule"), "rule");
+        assert_eq!(effective_or_default("", "", "info"), "info");
     }
 
     #[test]
