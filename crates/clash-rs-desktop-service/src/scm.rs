@@ -24,7 +24,11 @@ pub(crate) fn run_service_dispatcher() -> anyhow::Result<()> {
 }
 
 pub(crate) fn install_service() -> anyhow::Result<()> {
-    let manager = open_manager(ServiceManagerAccess::CREATE_SERVICE)?;
+    // CREATE_SERVICE alone can't reopen an existing service, and CONNECT alone
+    // can't create one — request both so a fresh install and a reconcile of an
+    // already-installed service both work from the same handle.
+    let manager =
+        open_manager(ServiceManagerAccess::CREATE_SERVICE | ServiceManagerAccess::CONNECT)?;
     let service_binary_path = std::env::current_exe()?;
     let service_info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
@@ -39,9 +43,36 @@ pub(crate) fn install_service() -> anyhow::Result<()> {
         account_password: None,
     };
 
-    let service = manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
-    service.set_description(SERVICE_DESCRIPTION)?;
-    Ok(())
+    match manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG) {
+        Ok(service) => {
+            service.set_description(SERVICE_DESCRIPTION)?;
+            Ok(())
+        }
+        // The service is already registered. Treat install as idempotent:
+        // reopen it and refresh its config so a moved/renamed binary (a fresh
+        // unzip to a new folder) is corrected rather than failing the install.
+        Err(error) if is_service_exists_error(&error) => {
+            let service = manager.open_service(
+                SERVICE_NAME,
+                ServiceAccess::CHANGE_CONFIG | ServiceAccess::QUERY_CONFIG,
+            )?;
+            service.change_config(&service_info)?;
+            service.set_description(SERVICE_DESCRIPTION)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// `true` when a `windows-service` error is the SCM "service already exists"
+/// failure (`ERROR_SERVICE_EXISTS`, 1073) raised by `CreateServiceW`.
+fn is_service_exists_error(error: &windows_service::Error) -> bool {
+    const ERROR_SERVICE_EXISTS: i32 = 1073;
+    matches!(
+        error,
+        windows_service::Error::Winapi(io_error)
+            if io_error.raw_os_error() == Some(ERROR_SERVICE_EXISTS)
+    )
 }
 
 pub(crate) fn uninstall_service() -> anyhow::Result<()> {
@@ -164,4 +195,27 @@ fn wait_for_state(
     }
 
     anyhow::bail!("timed out waiting for service state {expected_state:?}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_service_exists_error;
+
+    #[test]
+    fn service_exists_error_matches_1073() {
+        // CreateServiceW raises ERROR_SERVICE_EXISTS (1073) when the service is
+        // already registered — the case install must treat as idempotent.
+        let error = windows_service::Error::Winapi(std::io::Error::from_raw_os_error(1073));
+        assert!(is_service_exists_error(&error));
+    }
+
+    #[test]
+    fn other_winapi_errors_do_not_match() {
+        // Access denied (5) and "does not exist" (1060) are genuine failures
+        // and must not be swallowed as an already-installed no-op.
+        let denied = windows_service::Error::Winapi(std::io::Error::from_raw_os_error(5));
+        let missing = windows_service::Error::Winapi(std::io::Error::from_raw_os_error(1060));
+        assert!(!is_service_exists_error(&denied));
+        assert!(!is_service_exists_error(&missing));
+    }
 }

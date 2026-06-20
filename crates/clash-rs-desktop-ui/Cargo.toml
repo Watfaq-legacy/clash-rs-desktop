@@ -7,7 +7,6 @@ publish.workspace = true
 [[bin]]
 name = "clash-rs-desktop-ui"
 path = "src/main.rs"
-test = false
 
 [features]
 default = []

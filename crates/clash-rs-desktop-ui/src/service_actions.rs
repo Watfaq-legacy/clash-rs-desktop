@@ -26,10 +26,92 @@ pub(crate) fn reactor_service_status_text() -> String {
     }
 }
 
+/// Coarse health of the Windows helper service, derived from a fetched status
+/// string. Drives the install hint, the workspace nav banner, and the Service
+/// page status pill so the UI speaks plain state instead of raw SCM text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ServiceHealth {
+    /// No status fetched yet (the pre-fetch placeholder) or unparseable.
+    Unknown,
+    /// SCM has no such service — never installed, or uninstalled.
+    NotInstalled,
+    /// Registered with the SCM but not currently running.
+    Stopped,
+    /// Registered and running. The UI's start/stop core commands can reach it.
+    Running,
+}
+
+impl ServiceHealth {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            ServiceHealth::Unknown => "Unknown",
+            ServiceHealth::NotInstalled => "Not installed",
+            ServiceHealth::Stopped => "Installed · stopped",
+            ServiceHealth::Running => "Running",
+        }
+    }
+}
+
+/// Classify a fetched service-status string (as produced by
+/// [`reactor_service_status_text`]) into a coarse [`ServiceHealth`].
+///
+/// The status text carries a dedicated `SCM:` line holding either the SCM
+/// service state (`Running` / `Stopped` / `StartPending` / …) or an SCM error.
+/// `ERROR_SERVICE_DOES_NOT_EXIST` (1060) means not installed; an explicit
+/// `Running` means running; any other recognized state means installed but not
+/// running. Anything else (including the pre-fetch placeholder) is `Unknown`.
+pub(crate) fn service_health_from_status(status: &str) -> ServiceHealth {
+    let scm_line = status
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("SCM:"))
+        .map(str::trim)
+        .unwrap_or("");
+    let scm_lower = scm_line.to_ascii_lowercase();
+
+    if scm_lower.contains("1060") || scm_lower.contains("does not exist as an installed service") {
+        return ServiceHealth::NotInstalled;
+    }
+    if scm_line.is_empty() {
+        return ServiceHealth::Unknown;
+    }
+    if scm_lower == "running" {
+        return ServiceHealth::Running;
+    }
+    // A recognized SCM state word that isn't "Running" — installed, not running.
+    const INSTALLED_STATES: [&str; 6] = [
+        "stopped",
+        "startpending",
+        "stoppending",
+        "continuepending",
+        "pausepending",
+        "paused",
+    ];
+    if INSTALLED_STATES.contains(&scm_lower.as_str()) {
+        return ServiceHealth::Stopped;
+    }
+    ServiceHealth::Unknown
+}
+
+/// `true` when a fetched service-status string reports that the Windows service
+/// is not registered with the SCM. Thin wrapper over
+/// [`service_health_from_status`] kept for the install-hint call site.
+pub(crate) fn service_status_indicates_not_installed(status: &str) -> bool {
+    service_health_from_status(status) == ServiceHealth::NotInstalled
+}
+
 pub(crate) fn reactor_service_install_text() -> String {
     run_service_exe_elevated("--install")
         .map(|output| format!("service install\n{output}"))
         .unwrap_or_else(|error| format!("service install failed: {error}"))
+}
+
+/// Install (idempotently) and start the service under a single UAC elevation —
+/// the one-click path that takes a fresh setup from "not installed" to a
+/// Running service the UI can talk to.
+pub(crate) fn reactor_service_install_start_text() -> String {
+    run_service_exe_elevated("--install-start")
+        .map(|output| format!("service install & start\n{output}"))
+        .unwrap_or_else(|error| format!("service install & start failed: {error}"))
 }
 
 pub(crate) fn reactor_service_uninstall_text() -> String {
@@ -182,5 +264,70 @@ pub(crate) fn describe_service_response(response: &ServiceResponse) -> String {
         ServiceResponse::Ok => "service: ok".to_owned(),
         ServiceResponse::State { state } => format!("service: {}", describe_core_state(state)),
         ServiceResponse::Error { message } => format!("service error: {message}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ServiceHealth, service_health_from_status, service_status_indicates_not_installed,
+    };
+
+    #[test]
+    fn detects_not_installed_from_scm_error_code() {
+        // The shape produced by reactor_service_status_text when --service-status
+        // bubbles ERROR_SERVICE_DOES_NOT_EXIST (1060).
+        let status = "service status\nSCM: SCM status unavailable: ClashRsDesktopService \
+                      exited with exit code: 1: The specified service does not exist as an \
+                      installed service. (os error 1060)\nservice pipe failed: ...";
+        assert_eq!(
+            service_health_from_status(status),
+            ServiceHealth::NotInstalled
+        );
+        assert!(service_status_indicates_not_installed(status));
+    }
+
+    #[test]
+    fn detects_not_installed_from_message_text() {
+        // Even without the raw 1060 code, the standard SCM message classifies.
+        let status = "service status\nSCM: SCM status unavailable: does not exist as an \
+                      installed service\nservice pipe failed: ...";
+        assert_eq!(
+            service_health_from_status(status),
+            ServiceHealth::NotInstalled
+        );
+    }
+
+    #[test]
+    fn running_service_is_detected() {
+        // SCM reports Running and the pipe answered — the UI can reach it.
+        let status =
+            "service status\nSCM: Running\nservice: running (elevated: true, owner: Service)";
+        assert_eq!(service_health_from_status(status), ServiceHealth::Running);
+        assert!(!service_status_indicates_not_installed(status));
+    }
+
+    #[test]
+    fn installed_but_stopped_is_detected() {
+        let status = "service status\nSCM: Stopped\nservice pipe failed: pipe not found";
+        assert_eq!(service_health_from_status(status), ServiceHealth::Stopped);
+        // A pending transition still reads as installed (not running, not absent).
+        let pending = "service status\nSCM: StartPending\nservice pipe failed: ...";
+        assert_eq!(service_health_from_status(pending), ServiceHealth::Stopped);
+        assert!(!service_status_indicates_not_installed(status));
+    }
+
+    #[test]
+    fn placeholder_and_garbage_are_unknown() {
+        // The pre-fetch placeholder must not trip any concrete state.
+        assert_eq!(
+            service_health_from_status("Check Status to inspect the Windows service."),
+            ServiceHealth::Unknown
+        );
+        // An SCM line we don't recognize is Unknown, not a false Running/Stopped.
+        assert_eq!(
+            service_health_from_status("service status\nSCM: WeirdState\n..."),
+            ServiceHealth::Unknown
+        );
     }
 }

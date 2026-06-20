@@ -28,6 +28,17 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // Install (idempotently) and immediately start, under a single elevation so
+    // the UI's one-click "Install & start" reaches a Running service without a
+    // second UAC prompt.
+    #[cfg(windows)]
+    if std::env::args().any(|arg| arg == "--install-start") {
+        scm::install_service()?;
+        scm::start_service()?;
+        println!("installed and started {SERVICE_NAME}");
+        return Ok(());
+    }
+
     #[cfg(windows)]
     if std::env::args().any(|arg| arg == "--uninstall") {
         scm::uninstall_service()?;

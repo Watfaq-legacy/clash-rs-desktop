@@ -5,8 +5,10 @@
 /temp/
 /winmd/
 
-# Local development runtime assets, downloaded cores, and generated configs
-/.dev/
+# Local development runtime assets, downloaded cores, and generated configs.
+# Not anchored: `--dev` resolves `.dev/` relative to the working directory, so
+# it can appear nested (e.g. under a crate) depending on where the UI is run.
+.dev/
 
 # Packaged release output (produced by scripts/package-portable.ps1)
 /dist/

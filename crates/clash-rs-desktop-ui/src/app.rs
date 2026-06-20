@@ -45,6 +45,7 @@ pub(crate) fn app(_cx: &mut RenderCx) -> Element {
 
     configure_toast_purge(_cx, &toast_queue);
     configure_live_subscription(_cx, &selected_page, &dashboard_state);
+    configure_service_status_probe(_cx, &service_state);
 
     NavigationView::new(
         navigation_items(),
@@ -144,6 +145,21 @@ fn configure_live_subscription(
     );
 }
 
+/// Fetch the Windows service status once on app launch so the user immediately
+/// sees whether the helper service is installed/running — and the not-installed
+/// nav banner can appear — without having to open the Service page first. Keyed
+/// on a constant so it runs exactly once for the app's lifetime. The fetch
+/// touches the SCM and the service pipe (blocking), so it runs on a worker
+/// thread and marshals the result back via the async setter.
+fn configure_service_status_probe(cx: &mut RenderCx, service_state: &ServiceState) {
+    let set_status = service_state.set_status.clone();
+    cx.use_effect((), move || {
+        std::thread::spawn(move || {
+            set_status.call(crate::service_actions::reactor_service_status_text());
+        });
+    });
+}
+
 fn app_workspace(
     selected_page: &str,
     dashboard_state: &DashboardState,
@@ -154,10 +170,19 @@ fn app_workspace(
     toast_queue: &ToastQueue,
     set_selected_page: SetState<String>,
 ) -> Element {
+    // These siblings are diffed positionally, and the toast slot drops to
+    // `Element::Empty` when there are no toasts — which shifts the page into the
+    // toast's old index. Since every page is itself a `StackPanel`, an unkeyed
+    // diff then *morphs* the toast panel into the page (and one page into the
+    // next on navigation) in place, bleeding stale sections through. Stable keys
+    // — the page keyed by its tag — force identity matching so each page cleanly
+    // unmounts and remounts instead.
     scroll_view(
         vstack((
-            busy_strip(dashboard_state.action_busy),
-            toast_stack(toast_queue),
+            busy_strip(dashboard_state.action_busy).with_key("workspace-busy"),
+            service_nav_banner(selected_page, service_state, &set_selected_page)
+                .with_key("workspace-service-banner"),
+            toast_stack(toast_queue).with_key("workspace-toasts"),
             page_content(
                 selected_page,
                 dashboard_state,
@@ -167,12 +192,79 @@ fn app_workspace(
                 safety_state,
                 toast_queue,
                 set_selected_page,
-            ),
+            )
+            .with_key(format!("workspace-page-{selected_page}")),
         ))
         .spacing(spacing::LG + 2.0)
         .padding(Thickness::uniform(spacing::XXL)),
     )
     .vertical_scroll_bar_visibility(ScrollViewScrollBarVisibility::Visible)
+    .into()
+}
+
+/// An app-wide banner shown on any page *except* Service when the helper service
+/// is not installed, with a button that jumps to the Service page so the user
+/// can install it. This is the discoverability bridge for the first-run flow:
+/// the status is probed on launch, so a fresh install surfaces the call to
+/// action immediately instead of the user having to find the Service page.
+/// Renders nothing once the service exists, on the Service page itself, or
+/// before the first status arrives.
+fn service_nav_banner(
+    selected_page: &str,
+    service_state: &ServiceState,
+    set_selected_page: &SetState<String>,
+) -> Element {
+    use crate::service_actions::service_status_indicates_not_installed;
+
+    if selected_page == "service" || !service_status_indicates_not_installed(&service_state.status) {
+        return Element::Empty;
+    }
+
+    let go_to_service = {
+        let set_selected_page = set_selected_page.clone();
+        let service_state = service_state.clone();
+        move || {
+            // Mirror the nav handler's side effect: refresh service status as we
+            // land on the page so the install controls reflect live state.
+            let setter = service_state.set_status.clone();
+            std::thread::spawn(move || {
+                setter.call(crate::service_actions::reactor_service_status_text());
+            });
+            set_selected_page.call("service".to_owned());
+        }
+    };
+
+    border(
+        grid((
+            vstack((
+                text_block("Windows helper service not installed")
+                    .font_size(16.0)
+                    .semibold(),
+                text_block(
+                    "TUN mode and elevated core launches route through the helper service. \
+                     Install it to enable them.",
+                )
+                .font_size(12.0)
+                .foreground(tokens::SecondaryText),
+            ))
+            .spacing(2.0)
+            .grid_column(0),
+            button("Open Service page")
+                .icon(SymbolGlyph::Setting)
+                .on_click(go_to_service)
+                .accent()
+                .horizontal_alignment(HorizontalAlignment::Right)
+                .grid_column(1),
+        ))
+        .columns([GridLength::STAR, GridLength::Auto])
+        .column_spacing(spacing::LG)
+        .horizontal_alignment(HorizontalAlignment::Stretch),
+    )
+    .padding(Thickness::uniform(spacing::LG))
+    .corner_radius(8.0)
+    .background(tokens::CardBackground)
+    .border_brush(tokens::SystemAttention)
+    .border_thickness(Thickness::uniform(1.0))
     .into()
 }
 
