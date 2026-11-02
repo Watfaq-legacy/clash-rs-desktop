@@ -33,6 +33,158 @@ pub struct UserProfile {
     pub generated_path: PathBuf,
     pub profile_override_path: Option<PathBuf>,
     pub active: bool,
+    /// Traffic/expiry advertised by the provider (`subscription-userinfo`).
+    #[serde(default)]
+    pub subscription: Option<SubscriptionInfo>,
+    /// Unix seconds of the last successful download, for remote profiles.
+    #[serde(default)]
+    pub updated_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscriptionInfo {
+    pub upload: u64,
+    pub download: u64,
+    pub total: u64,
+    /// Unix seconds; absent or 0 means no expiry.
+    pub expire: Option<i64>,
+}
+
+impl SubscriptionInfo {
+    /// Parse `upload=1; download=2; total=3; expire=4`.
+    pub fn parse_header(raw: &str) -> Option<Self> {
+        let mut info = Self::default();
+        let mut seen = false;
+        for part in raw.split(';') {
+            let Some((key, value)) = part.split_once('=') else {
+                continue;
+            };
+            // Some providers send floats or empty values; tolerate both.
+            let value = value.trim();
+            let number = value.parse::<f64>().ok().map(|n| n.max(0.0) as u64);
+            match key.trim().to_ascii_lowercase().as_str() {
+                "upload" => info.upload = number.unwrap_or(0),
+                "download" => info.download = number.unwrap_or(0),
+                "total" => info.total = number.unwrap_or(0),
+                "expire" => info.expire = number.filter(|n| *n > 0).map(|n| n as i64),
+                _ => continue,
+            }
+            seen = true;
+        }
+        seen.then_some(info)
+    }
+}
+
+/// A downloaded subscription, ready to be stored by [`ProfileStore`].
+#[derive(Debug, Clone)]
+pub struct FetchedSubscription {
+    pub url: String,
+    pub body: String,
+    pub info: Option<SubscriptionInfo>,
+    pub suggested_name: Option<String>,
+}
+
+/// Download a subscription URL and check it is a Clash config.
+pub async fn fetch_subscription(url: &str) -> anyhow::Result<FetchedSubscription> {
+    let url = url.trim();
+    let parsed = reqwest::Url::parse(url).map_err(|_| anyhow::anyhow!("订阅链接格式不正确"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        anyhow::bail!("订阅链接需要以 http:// 或 https:// 开头");
+    }
+
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?
+        .get(parsed.clone())
+        // Providers pick the output format from the UA; this gets Clash YAML.
+        .header(reqwest::header::USER_AGENT, "clash.meta clash-rs-desktop/0.1")
+        .send()
+        .await
+        .map_err(|error| anyhow::anyhow!("无法下载订阅：{error}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        anyhow::bail!("订阅服务器返回错误（{status}）");
+    }
+
+    let headers = response.headers().clone();
+    let body = response.text().await?;
+    validate_clash_yaml(&body)?;
+
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+    let suggested_name = header("profile-title")
+        .and_then(decode_profile_title)
+        .or_else(|| header("content-disposition").and_then(filename_from_disposition))
+        .or_else(|| parsed.host_str().map(str::to_owned));
+
+    Ok(FetchedSubscription {
+        url: url.to_owned(),
+        body,
+        info: header("subscription-userinfo").and_then(SubscriptionInfo::parse_header),
+        suggested_name,
+    })
+}
+
+fn validate_clash_yaml(body: &str) -> anyhow::Result<()> {
+    let value: serde_yaml::Value = serde_yaml::from_str(body)
+        .map_err(|_| anyhow::anyhow!("订阅内容不是 Clash 配置，请确认链接支持 Clash"))?;
+    let has_nodes = ["proxies", "proxy-providers"]
+        .iter()
+        .any(|key| value.get(*key).is_some());
+    if !has_nodes {
+        anyhow::bail!("订阅里没有找到任何节点");
+    }
+    Ok(())
+}
+
+fn decode_profile_title(raw: &str) -> Option<String> {
+    use base64::Engine as _;
+    let title = match raw.strip_prefix("base64:") {
+        Some(encoded) => String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded.trim())
+                .ok()?,
+        )
+        .ok()?,
+        None => raw.to_owned(),
+    };
+    let title = title.trim();
+    (!title.is_empty()).then(|| title.to_owned())
+}
+
+fn filename_from_disposition(raw: &str) -> Option<String> {
+    // Prefer RFC 5987 `filename*=UTF-8''...`, then plain `filename=`.
+    let pick = |prefix: &str| {
+        raw.split(';')
+            .map(str::trim)
+            .find_map(|part| part.strip_prefix(prefix))
+            .map(|v| v.trim_matches('"').to_owned())
+    };
+    let name = pick("filename*=")
+        .and_then(|v| v.split_once("''").map(|(_, rest)| percent_decode(rest)))
+        .or_else(|| pick("filename="))?;
+    let name = name.trim_end_matches(".yaml").trim_end_matches(".yml").trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3])
+            && let Ok(byte) = u8::from_str_radix(hex, 16)
+        {
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -105,6 +257,8 @@ impl ProfileStore {
             generated_path: profile_dir.join("generated.yaml"),
             profile_override_path: Some(profile_dir.join("override.yaml")),
             active: false,
+            subscription: None,
+            updated_at: None,
         };
 
         self.upsert(profile);
@@ -136,6 +290,8 @@ impl ProfileStore {
             generated_path: profile_dir.join("generated.yaml"),
             profile_override_path: Some(profile_dir.join("override.yaml")),
             active: false,
+            subscription: None,
+            updated_at: None,
         };
 
         self.upsert(profile);
@@ -162,6 +318,74 @@ impl ProfileStore {
             Some(index) => self.manifest.profiles[index] = profile,
             None => self.manifest.profiles.push(profile),
         }
+    }
+
+    /// Store a freshly downloaded subscription as a new profile. The first
+    /// profile becomes active automatically.
+    pub fn import_remote(
+        &mut self,
+        paths: &AppPaths,
+        fetched: FetchedSubscription,
+    ) -> anyhow::Result<ProfileId> {
+        let name = fetched
+            .suggested_name
+            .clone()
+            .unwrap_or_else(|| "订阅".to_owned());
+        let id = self.unique_profile_id(&name);
+        let profile_dir = paths.profiles_dir.join(&id.0);
+        fs::create_dir_all(&profile_dir)?;
+
+        let source_path = profile_dir.join("source.yaml");
+        fs::write(&source_path, &fetched.body)?;
+
+        let profile = UserProfile {
+            id: id.clone(),
+            name,
+            source: ProfileSource::RemoteUrl {
+                url: fetched.url,
+                headers: Vec::new(),
+            },
+            source_path,
+            generated_path: profile_dir.join("generated.yaml"),
+            profile_override_path: Some(profile_dir.join("override.yaml")),
+            active: false,
+            subscription: fetched.info,
+            updated_at: Some(unix_now()),
+        };
+
+        self.upsert(profile);
+        if self.manifest.active_profile_id.is_none() {
+            self.set_active(&id)?;
+        }
+        Ok(id)
+    }
+
+    /// Replace a remote profile's content with a new download. The user's
+    /// override file is untouched, so their edits survive the update.
+    pub fn apply_refresh(
+        &mut self,
+        id: &ProfileId,
+        fetched: FetchedSubscription,
+    ) -> anyhow::Result<()> {
+        let profile = self
+            .manifest
+            .profiles
+            .iter_mut()
+            .find(|profile| &profile.id == id)
+            .ok_or_else(|| anyhow::anyhow!("profile {} does not exist", id.0))?;
+
+        // Write-then-rename so a crash mid-write can't leave a torn config.
+        let staging = profile.source_path.with_extension("yaml.new");
+        fs::write(&staging, &fetched.body)?;
+        fs::rename(&staging, &profile.source_path)?;
+
+        profile.subscription = fetched.info.or(profile.subscription.take());
+        profile.updated_at = Some(unix_now());
+        Ok(())
+    }
+
+    pub fn profile(&self, id: &ProfileId) -> Option<&UserProfile> {
+        self.manifest.profiles.iter().find(|profile| &profile.id == id)
     }
 
     pub fn remove(&mut self, id: &ProfileId) -> Option<UserProfile> {
@@ -226,6 +450,13 @@ impl ProfileStore {
     }
 }
 
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+}
+
 pub fn default_profile_yaml() -> &'static str {
     "log-level: info\nmode: rule\nallow-lan: false\nmixed-port: 7890\nrules:\n  - MATCH,DIRECT\n"
 }
@@ -255,7 +486,45 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{ProfileId, ProfileSource, ProfileStore, UserProfile};
+    use super::{
+        ProfileId, ProfileSource, ProfileStore, SubscriptionInfo, UserProfile,
+        decode_profile_title, filename_from_disposition,
+    };
+
+    #[test]
+    fn parses_subscription_userinfo() {
+        let info = SubscriptionInfo::parse_header(
+            "upload=1024; download=2048.0; total=10737418240; expire=1767225600",
+        )
+        .unwrap();
+        assert_eq!(info.upload, 1024);
+        assert_eq!(info.download, 2048);
+        assert_eq!(info.total, 10_737_418_240);
+        assert_eq!(info.expire, Some(1_767_225_600));
+
+        let no_expiry = SubscriptionInfo::parse_header("upload=0; download=0; total=1; expire=")
+            .unwrap();
+        assert_eq!(no_expiry.expire, None);
+        assert!(SubscriptionInfo::parse_header("garbage").is_none());
+    }
+
+    #[test]
+    fn derives_profile_names_from_headers() {
+        assert_eq!(
+            decode_profile_title("base64:5rWL6K+V5py65Zy6").as_deref(),
+            Some("测试机场")
+        );
+        assert_eq!(decode_profile_title("Plain").as_deref(), Some("Plain"));
+        assert_eq!(
+            filename_from_disposition("attachment; filename*=UTF-8''%E6%9C%BA%E5%9C%BA.yaml")
+                .as_deref(),
+            Some("机场")
+        );
+        assert_eq!(
+            filename_from_disposition(r#"attachment; filename="My Sub.yml""#).as_deref(),
+            Some("My Sub")
+        );
+    }
 
     #[test]
     fn profile_store_persists_active_profile() {
@@ -271,6 +540,8 @@ mod tests {
             generated_path: temp.join("generated.yaml"),
             profile_override_path: None,
             active: false,
+            subscription: None,
+            updated_at: None,
         };
 
         store.upsert(profile);

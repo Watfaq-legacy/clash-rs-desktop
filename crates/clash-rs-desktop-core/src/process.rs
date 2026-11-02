@@ -1,7 +1,10 @@
 use std::{
+    collections::VecDeque,
     fs,
+    io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
@@ -112,10 +115,78 @@ impl CoreLaunchRequest {
     }
 }
 
+/// Bounded tail of the core's stdout/stderr, shared with the reader threads.
+#[derive(Debug, Clone, Default)]
+pub struct CoreLog {
+    lines: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl CoreLog {
+    const CAPACITY: usize = 500;
+
+    fn push(&self, line: String) {
+        let mut lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
+        if lines.len() == Self::CAPACITY {
+            lines.pop_front();
+        }
+        lines.push_back(line);
+    }
+
+    pub fn clear(&self) {
+        self.lines.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
+    pub fn tail(&self, count: usize) -> Vec<String> {
+        let lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
+        lines.iter().skip(lines.len().saturating_sub(count)).cloned().collect()
+    }
+}
+
+fn pump_lines(source: impl Read + Send + 'static, log: CoreLog) {
+    std::thread::spawn(move || {
+        // clash-rs logs with ANSI colors; read bytes so a non-UTF-8 line
+        // can't end the pump, and strip escapes before storing.
+        let mut reader = BufReader::new(source);
+        let mut buf = Vec::new();
+        while matches!(reader.read_until(b'\n', &mut buf), Ok(n) if n > 0) {
+            let line = strip_ansi(&String::from_utf8_lossy(&buf));
+            let line = line.trim_end();
+            if !line.is_empty() {
+                log.push(line.to_owned());
+            }
+            buf.clear();
+        }
+    });
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            // CSI sequence: ESC [ ... final byte in @..~
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
 #[derive(Debug)]
 pub struct ClashProcessManager {
     state: CoreState,
     child: Option<Child>,
+    /// Kill-on-close job the child is assigned to; dropping it (including when
+    /// this process dies) takes the core down, so it can never be orphaned.
+    job: Option<job::KillOnCloseJob>,
+    log: CoreLog,
 }
 
 impl Default for ClashProcessManager {
@@ -129,7 +200,13 @@ impl ClashProcessManager {
         Self {
             state: CoreState::Stopped,
             child: None,
+            job: None,
+            log: CoreLog::default(),
         }
+    }
+
+    pub fn log(&self) -> &CoreLog {
+        &self.log
     }
 
     pub fn state(&mut self) -> CoreState {
@@ -151,10 +228,34 @@ impl ClashProcessManager {
             command.current_dir(binary_dir);
         }
         hide_console_window(&mut command);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
-        let child = command.spawn()?;
+        let mut child = command.spawn()?;
+        let job = match job::KillOnCloseJob::assign(&child) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error.context("failed to bind clash-rs to a job object"));
+            }
+        };
+
+        // Always drain both pipes: an undrained pipe fills up and blocks the
+        // core on its next log write.
+        self.log.clear();
+        if let Some(stdout) = child.stdout.take() {
+            pump_lines(stdout, self.log.clone());
+        }
+        if let Some(stderr) = child.stderr.take() {
+            pump_lines(stderr, self.log.clone());
+        }
+
         let pid = child.id();
         self.child = Some(child);
+        self.job = Some(job);
         self.state = CoreState::Running {
             elevated: false,
             owner: CoreOwner::UiProcess { pid },
@@ -174,6 +275,7 @@ impl ClashProcessManager {
             child.kill()?;
         }
         child.wait()?;
+        self.job = None;
         self.state = CoreState::Stopped;
         Ok(self.state.clone())
     }
@@ -192,6 +294,7 @@ impl ClashProcessManager {
         match child.try_wait() {
             Ok(Some(status)) => {
                 self.child = None;
+                self.job = None;
                 self.state = if status.success() {
                     CoreState::Stopped
                 } else {
@@ -218,6 +321,73 @@ impl Drop for ClashProcessManager {
                 let _ = child.kill();
             }
             let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(windows)]
+mod job {
+    use std::{os::windows::io::AsRawHandle, process::Child};
+
+    use windows::Win32::{
+        Foundation::{CloseHandle, HANDLE},
+        System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
+        },
+    };
+
+    #[derive(Debug)]
+    pub struct KillOnCloseJob(HANDLE);
+
+    // The job handle is only used for CloseHandle; safe to move across threads.
+    unsafe impl Send for KillOnCloseJob {}
+    unsafe impl Sync for KillOnCloseJob {}
+
+    impl KillOnCloseJob {
+        pub fn assign(child: &Child) -> anyhow::Result<Self> {
+            // SAFETY: plain Win32 calls on handles we own; `info` outlives the
+            // SetInformationJobObject call, and the child handle stays valid
+            // while `child` is borrowed.
+            unsafe {
+                let job = Self(CreateJobObjectW(None, None)?);
+                let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )?;
+                AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle()))?;
+                Ok(job)
+            }
+        }
+    }
+
+    impl Drop for KillOnCloseJob {
+        fn drop(&mut self) {
+            // SAFETY: handle came from CreateJobObjectW and is closed once.
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod job {
+    use std::process::Child;
+
+    // Non-Windows hosts rely on explicit stop/Drop; a prctl/PR_SET_PDEATHSIG
+    // equivalent can be added with the Linux service.
+    #[derive(Debug)]
+    pub struct KillOnCloseJob;
+
+    impl KillOnCloseJob {
+        pub fn assign(_child: &Child) -> anyhow::Result<Self> {
+            Ok(Self)
         }
     }
 }

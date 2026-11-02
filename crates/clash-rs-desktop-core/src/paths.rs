@@ -35,6 +35,17 @@ impl AppPaths {
         self.profiles_dir.join("profiles.json")
     }
 
+    /// The user's own config edits, applied on top of every profile.
+    pub fn global_override_path(&self) -> PathBuf {
+        self.program_data.join("override.yaml")
+    }
+
+    /// The OS proxy settings captured before we changed them. Its presence
+    /// means "we still owe the user a restore" — survives crashes.
+    pub fn system_proxy_snapshot_path(&self) -> PathBuf {
+        self.runtime_dir.join("system-proxy-snapshot.json")
+    }
+
     pub fn core_pid_path(&self) -> PathBuf {
         self.runtime_dir.join("core.pid")
     }

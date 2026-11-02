@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "crates/clash-rs-desktop-core",
     "crates/clash-rs-desktop-service",
-    "crates/clash-rs-desktop-ui",
+    "app/src-tauri",
 ]
 
 [workspace.package]
@@ -29,3 +29,11 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-
 tokio-tungstenite = "0.24"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# See https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

@@ -1,0 +1,235 @@
+<script lang="ts">
+  import { api, type Profile } from "$lib/api";
+  import Icon from "$lib/components/Icon.svelte";
+  import TitleBar from "$lib/components/TitleBar.svelte";
+  import * as fmt from "$lib/format";
+  import { app } from "$lib/store.svelte";
+
+  const profiles = $derived(app.view?.profiles ?? []);
+  let busy = $state<string | null>(null);
+  let confirmDelete = $state<string | null>(null);
+
+  async function act(id: string, action: () => Promise<unknown>, done?: string) {
+    if (busy) return;
+    busy = id;
+    const result = await app.run(action);
+    busy = null;
+    if (result !== null && done) app.showToast(done);
+  }
+
+  function remove(profile: Profile) {
+    if (confirmDelete !== profile.id) {
+      confirmDelete = profile.id;
+      setTimeout(() => confirmDelete === profile.id && (confirmDelete = null), 3000);
+      return;
+    }
+    confirmDelete = null;
+    act(profile.id, () => api.removeProfile(profile.id), "已删除");
+  }
+
+  function usage(profile: Profile) {
+    const info = profile.subscription;
+    if (!info?.total) return null;
+    const used = info.upload + info.download;
+    return { used, total: info.total, ratio: Math.min(1, used / info.total) };
+  }
+</script>
+
+<div class="screen">
+  <TitleBar title="订阅" onBack={() => app.back()} />
+
+  <div class="scroll">
+    {#each profiles as profile (profile.id)}
+      {@const u = usage(profile)}
+      {@const expire = profile.subscription?.expire}
+      <article class:active={profile.active}>
+        <button
+          class="main"
+          onclick={() => !profile.active && act(profile.id, () => api.selectProfile(profile.id))}
+          disabled={profile.active || !!busy}
+        >
+          <span class="radio"><span></span></span>
+          <span class="info">
+            <span class="name">{profile.name}</span>
+            {#if u}
+              <span class="meter"><span style="width: {u.ratio * 100}%"></span></span>
+            {/if}
+            <span class="meta num">
+              {#if u}{fmt.bytes(u.used)} / {fmt.bytes(u.total, 0)}{/if}
+              {#if expire}{u ? " · " : ""}{fmt.date(expire)} 到期{/if}
+              {#if !u && !expire && profile.updatedAt}更新于 {fmt.relative(profile.updatedAt)}{/if}
+            </span>
+          </span>
+        </button>
+        <div class="actions">
+          {#if profile.remote}
+            <button
+              class="icon"
+              title="更新订阅"
+              disabled={!!busy}
+              onclick={() => act(profile.id, () => api.refreshSubscription(profile.id), "订阅已更新")}
+            >
+              <span class:spin={busy === profile.id}><Icon name="refresh" size={16} /></span>
+            </button>
+          {/if}
+          <button
+            class="icon del"
+            class:confirm={confirmDelete === profile.id}
+            title="删除"
+            disabled={!!busy}
+            onclick={() => remove(profile)}
+          >
+            {#if confirmDelete === profile.id}确认删除{:else}<Icon name="trash" size={16} />{/if}
+          </button>
+        </div>
+      </article>
+    {/each}
+
+    <button class="add" onclick={() => app.go("add")}>
+      <Icon name="plus" size={16} /> 添加订阅
+    </button>
+  </div>
+</div>
+
+<style>
+  .screen {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  .scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 16px 20px 20px;
+    scrollbar-gutter: stable;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  article {
+    display: flex;
+    align-items: center;
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    transition: box-shadow 0.2s;
+  }
+  article.active {
+    box-shadow: var(--shadow), inset 0 0 0 1.5px var(--accent);
+  }
+  .main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px;
+    text-align: left;
+  }
+  .radio {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    box-shadow: inset 0 0 0 2px var(--text-3);
+    transition: box-shadow 0.2s;
+  }
+  .radio span {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    transform: scale(0);
+    transition: transform 0.2s var(--ease);
+  }
+  .active .radio {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .active .radio span {
+    transform: scale(1);
+  }
+  .info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .name {
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .meter {
+    height: 4px;
+    margin: 4px 0 2px;
+    border-radius: 2px;
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+  .meter span {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  }
+  .meta {
+    font-size: 12px;
+    color: var(--text-2);
+    min-height: 16px;
+  }
+  .actions {
+    display: flex;
+    gap: 2px;
+    padding-right: 8px;
+  }
+  .icon {
+    min-width: 34px;
+    height: 34px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    color: var(--text-2);
+    font-size: 12px;
+    transition: background 0.15s, color 0.15s;
+  }
+  .icon:not(:disabled):hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .del:not(:disabled):hover,
+  .del.confirm {
+    color: var(--bad);
+  }
+  .del.confirm {
+    padding: 0 10px;
+    background: rgb(226 87 76 / 0.12);
+  }
+  .spin {
+    display: grid;
+    animation: spin 0.9s linear infinite;
+  }
+  .add {
+    height: 48px;
+    border-radius: var(--radius);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--accent);
+    border: 1.5px dashed var(--accent);
+    opacity: 0.85;
+    transition: background 0.15s;
+  }
+  .add:hover {
+    background: var(--accent-soft);
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+</style>

@@ -6,7 +6,7 @@ use crate::{
     ActiveCore, AppPaths, ClashIpcClient, ClashIpcClientConfig, ClashProcessManager, ConfigLayers,
     CoreLaunchRequest, CoreState, GeneratedRuntimeConfig, LaunchRequirements, ProfileStore,
     RuntimeConfigManager, VersionInfo,
-    process::{clear_core_pid, kill_pid, pid_is_alive, read_core_pid, write_core_pid},
+    process::CoreLog,
     launch_requirements_from_config, shell_runtime_override,
 };
 
@@ -19,6 +19,10 @@ pub struct RuntimeLaunchOptions {
     pub profile_override_path: Option<PathBuf>,
     pub core_pipe_path: String,
     pub core_pid_path: PathBuf,
+    /// Shell-owned settings layered on top of every user layer (ports, mode,
+    /// TUN switch). Must be a mapping or null.
+    #[serde(default)]
+    pub extra_runtime_override: serde_yaml::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +68,7 @@ impl CoreRuntimeManager {
                 base_profile_path: self.options.base_profile_path.clone(),
                 global_override_path: self.options.global_override_path.clone(),
                 profile_override_path: self.options.profile_override_path.clone(),
-                shell_runtime_override: shell_runtime_override(&self.options.core_pipe_path),
+                shell_runtime_override: self.shell_override(),
             },
             self.runtime_config_path(),
         );
@@ -95,9 +99,7 @@ impl CoreRuntimeManager {
             });
         }
 
-        let state = self.process.start_direct(&self.launch_request())?;
-        self.persist_pid(&state);
-        Ok(state)
+        self.process.start_direct(&self.launch_request())
     }
 
     pub fn start(&mut self, requirements: LaunchRequirements) -> anyhow::Result<CoreState> {
@@ -108,30 +110,17 @@ impl CoreRuntimeManager {
         }
 
         self.generate_config()?;
-        let state = self.process.start_direct(&self.launch_request())?;
-        self.persist_pid(&state);
-        Ok(state)
+        self.process.start_direct(&self.launch_request())
     }
 
+    // The core runs inside a kill-on-close job object, so there is no orphan
+    // left to hunt down via a PID file (which could also hit a reused PID).
     pub fn stop(&mut self) -> anyhow::Result<CoreState> {
-        let result = self.process.stop()?;
-        if let Some(pid) = read_core_pid(&self.options.core_pid_path)
-            && pid_is_alive(pid)
-        {
-            let _ = kill_pid(pid);
-        }
-        clear_core_pid(&self.options.core_pid_path);
-        Ok(result)
+        self.process.stop()
     }
 
-    fn persist_pid(&self, state: &CoreState) {
-        if let CoreState::Running {
-            owner: crate::process::CoreOwner::UiProcess { pid },
-            ..
-        } = state
-        {
-            let _ = write_core_pid(&self.options.core_pid_path, *pid);
-        }
+    pub fn log(&self) -> &CoreLog {
+        self.process.log()
     }
 
     pub fn state(&mut self) -> CoreState {
@@ -175,6 +164,17 @@ impl CoreRuntimeManager {
         })
     }
 
+    fn shell_override(&self) -> serde_yaml::Value {
+        let mut shell = shell_runtime_override(&self.options.core_pipe_path);
+        if self.options.extra_runtime_override.is_mapping() {
+            crate::config_layers::apply_overlay(
+                &mut shell,
+                self.options.extra_runtime_override.clone(),
+            );
+        }
+        shell
+    }
+
     fn runtime_config_path(&self) -> PathBuf {
         self.options.paths.runtime_dir.join("generated.yaml")
     }
@@ -193,6 +193,7 @@ pub fn local_dev_runtime_options(
         profile_override_path: None,
         core_pipe_path: format!(r"\\.\pipe\clash-rs-desktop-dev-{}", std::process::id()),
         core_pid_path: paths.core_pid_path(),
+        extra_runtime_override: serde_yaml::Value::Null,
         paths,
         active_core,
     }
@@ -219,6 +220,7 @@ pub fn runtime_options_from_active_profile(
             .cloned(),
         core_pipe_path,
         core_pid_path: paths.core_pid_path(),
+        extra_runtime_override: serde_yaml::Value::Null,
         paths,
         active_core,
     })

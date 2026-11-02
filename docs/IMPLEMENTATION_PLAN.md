@@ -1,123 +1,37 @@
 # Implementation Plan
 
-This plan turns the current scaffold into a usable Windows desktop shell for `clash-rs`. Work is split into vertical slices so every phase leaves the app buildable and testable.
+Goal: a desktop client a non-technical user can run with one switch, with advanced options one level down (L0 → L3).
 
-## Phase 1: Core Runtime Orchestration
+| Level | Who | Surface |
+|---|---|---|
+| L0 | everyone | power switch, current node, subscription usage |
+| L1 | some | routing mode, launch at login, auto-connect, manual node pick |
+| L2 | power users | add rules without YAML (planned) |
+| L3 | experts | custom config overlay (YAML), logs |
 
-Goal: make the non-UI core crate own a complete local launch flow.
+## Done (phase 1 — system proxy mode)
 
-- Add an app-level orchestrator that loads active binary metadata, generates runtime config, decides direct vs service launch, starts/stops the core, and probes `/version` over the named pipe.
-- Keep all runtime paths under an `AppPaths` root so production can use ProgramData while local dev can use `.dev`.
-- Preserve the layered config model: base profile, global override, profile override, shell override.
-- Add health/status output that the UI and service can serialize.
-- Keep direct launch for non-elevated mode and return `NeedsService` when TUN or route mutation requires elevation.
+- Tauri 2 + Svelte 5 shell replacing the `windows-reactor` UI.
+- `Engine` orchestration: connect/disconnect/watchdog, crash-safe system proxy snapshot/restore.
+- Core process in a kill-on-close job object; stdout/stderr drained into a bounded log (fixes pipe-fill stalls and orphaned cores; replaces PID-file kill, which could hit reused PIDs).
+- System proxy via the registry API with WinINet refresh (fixes values being lost on restore; browsers pick up changes immediately). LAN ranges bypassed.
+- Subscription import/refresh with `subscription-userinfo` / `profile-title`.
+- Config overlay `prepend-`/`append-` list splicing.
+- Tray (toggle/show/quit), single instance, close-to-tray, launch at login, auto-connect.
+- Screens: onboarding, home, nodes (latency test), settings, subscriptions, custom config, logs.
 
-## Phase 2: Profile and Config Management
+## Next
 
-Goal: support user config profiles without mutating imported configs.
-
-- Add a profile store manifest with active profile selection.
-- Support local file imports, remote URL metadata, and generated inline templates.
-- Store profile source files, profile overrides, and generated runtime config separately.
-- Add profile CRUD operations and active-profile switching.
-- Validate generated YAML before launch with `clash-rs --test-config`.
-
-## Phase 3: System Proxy and TUN Control
-
-Goal: expose safe system-level toggles with restore behavior.
-
-- Model system proxy enable/disable/apply/restore operations.
-- Snapshot existing proxy state before changing Windows settings.
-- Detect whether TUN settings require service-owned elevated launch.
-- Keep Wintun packaging separate from Clash binary updates.
-- Make shutdown restore proxy state and stop elevated core reliably.
-
-## Phase 4: Service Boundary
-
-Goal: implement a privileged supervisor that the UI can command over a named pipe.
-
-- Implement service pipe transport using line-delimited JSON commands and responses.
-- Add `StartCore`, `StopCore`, `RestartCore`, `Status`, `ApplyUpdate`, and `RollbackUpdate` handlers.
-- Ensure child process cleanup on service exit.
-- Add request validation so the service only launches managed binaries/config paths.
-- Later package as a real Windows Service with install/uninstall commands.
-
-## Phase 5: Controller API Coverage
-
-Goal: match the dashboard-backed operational surface.
-
-- Use `docs/DASHBOARD_PARITY.md` as the source checklist for the GUI-facing API and page surface from `../clash-rs/clash-dashboard`.
-- Keep typed wrappers for `/version`, `/configs`, `/proxies`, `/providers/*`, `/rules`, `/connections`, `/dns/query`, `/memory`, and restart.
-- Add WebSocket clients for logs, traffic, and flows.
-- Add tests for endpoint paths and request serialization.
-
-## Phase 6: Native UI
-
-Goal: build a Reactor UI around the core orchestration.
-
-- Create pages for overview, profiles, proxies/providers, rules/connections, logs, settings, and updates.
-- Start with a read-only shell that displays runtime state and version.
-- Add start/stop/restart actions and profile switching.
-- Add settings for update channel, system proxy, TUN, and global overrides.
-- Keep UI non-elevated; use the service for privileged operations.
-
-## Phase 7: Updates and Packaging
-
-Goal: safely manage `clash-rs.exe` updates and installer lifecycle.
-
-- Implement stable/latest-preview GitHub release lookup.
-- Download architecture-specific assets, verify checksums when available, and write active metadata.
-- Keep one rollback binary.
-- Add app packaging, service install, and code-signing hooks.
-
-## Current Execution Slice
-
-Completed backend slices:
-
-- Phase 1 core runtime orchestration.
-- Phase 2 profile manifest foundations, default profile creation, local profile import, active profile launch, and `clash-rs --test-config` validation.
-- Phase 3 persistent app settings, initial TUN requirement detection, and Windows system proxy backend primitives.
-- Phase 4 service command shell with stdin development mode and Windows named-pipe transport.
-- Phase 6 initial Reactor GUI shell with refresh/status/update actions, direct Start/Stop/Restart lifecycle controls, real profile list/import/select/delete/default/validate actions, settings persistence controls, and Windows system proxy apply/restore.
-- Phase 7 release metadata checking, Windows asset selection, ZIP extraction, SHA-256 activation metadata, and rollback preservation.
-
-Next execution slice: expand the Reactor UI with architecture selection, profile/global override editing, service-backed elevated launch, and the dashboard parity pages tracked in `docs/DASHBOARD_PARITY.md`.
-
-## GUI Gap Closure Todo Backlog (May 2026)
-
-This backlog converts the current GUI parity gaps into execution-ready todos. Keep this section updated as work lands.
-
-### Priority P0 (Ship Blockers)
-
-- [ ] Restore visible action output in the app shell so every command has user-facing success/error feedback.
-- [ ] Add lightweight busy/disabled states for long-running actions (stream start/stop, provider refresh, close-all connections).
-- [ ] Replace one-shot stream sampling with persistent live stream infrastructure (traffic, connections, logs, flows) with reconnect and bounded buffering.
-- [ ] Remove Overview "Controller samples" actions and replace with live widgets backed by persistent streams.
-- [ ] Implement a full Flows page: include-closed toggle, totals, top destination, active/closed counts, filter (destination/protocol), and sort (bytes/upload/download/connection count).
-- [ ] Implement a full Logs page: connection status, level filter, pause/resume autoscroll, clear buffer, and bounded history.
-- [ ] Add tests for stream lifecycle and buffering behavior (initial connect, reconnect, teardown, cap eviction).
-
-### Priority P1 (High Value Parity)
-
-- [ ] Enrich Connections model and table with parity fields: ASN, process, and duration, with graceful fallbacks when unavailable.
-- [ ] Extend connection filtering to include ASN (and process if present).
-- [ ] Split provider surfaces into explicit Proxy Provider and Rule Provider inventory views.
-- [ ] Add Rule Provider inventory metadata columns: type, vehicle type, behavior, format, rule count, updated time.
-- [ ] Wire rule-provider actions (update, inspect rules, match test) from selected inventory rows.
-- [ ] Replace config reload path text input with a file picker flow (keep manual path fallback optional).
-
-### Priority P2 (Product Decision / Nice-to-Have)
-
-- [ ] Decide settings direction for remote dashboard parity:
-	- Desktop-only managed named-pipe endpoint, or
-	- Optional remote controller URL + secret.
-- [ ] If remote mode is approved, add settings UI + persistence + runtime client wiring for endpoint/secret.
-- [ ] Optional: add a chart panel for Flows after table-first parity is complete.
-
-### Validation and Release Gate
-
-- [ ] Run `cargo check --workspace --all-targets`.
-- [ ] Run `cargo test --workspace`.
-- [ ] Run `cargo check -p clash-rs-desktop-ui --features reactor`.
-- [ ] Update `docs/DASHBOARD_PARITY.md` status lines to reflect delivered GUI parity.
-- [ ] Capture known non-goals and deferred work explicitly in docs before merge.
+1. **TUN ("增强模式") via a rewritten service.** The legacy service accepts arbitrary `binary_path`/`config_path` from any authenticated user and runs them as LocalSystem — a local privilege escalation. Rewrite so that:
+   - the service only launches the core binary from its own admin-only directory;
+   - the UI sends config *content*; the service writes it to an admin-only dir and validates it;
+   - the core runs in a job object owned by the service; logs are captured and served over the pipe;
+   - requests carry an id and the pipe server handles clients concurrently (a slow start must not block status).
+   One UAC prompt to install; the toggle stays one click afterwards.
+2. App and tray icons from the Choclite brand; connected/disconnected tray states.
+3. `choclite://install-config?url=` deep link for one-click import from provider sites.
+4. Auto-refresh subscriptions on the provider's `profile-update-interval`.
+5. Core auto-update check (settings → about), using `binary_update`.
+6. L2 rule editor ("this site: proxy / direct") writing to the overlay.
+7. Hot reload via the controller instead of reconnecting on config changes.
+8. Linux: unix-socket controller, gsettings/env proxy backend, systemd/polkit for TUN.

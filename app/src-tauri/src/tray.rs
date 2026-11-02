@@ -1,0 +1,93 @@
+//! System tray: one-click toggle, status line, show/quit.
+
+use tauri::{
+    AppHandle, Manager, Wry,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+};
+
+use crate::state::{Phase, View};
+
+const TRAY_ID: &str = "main";
+
+struct TrayItems {
+    status: MenuItem<Wry>,
+    toggle: MenuItem<Wry>,
+}
+
+pub fn create(app: &AppHandle) -> tauri::Result<()> {
+    let status = MenuItem::with_id(app, "status", "未连接", false, None::<&str>)?;
+    let toggle = MenuItem::with_id(app, "toggle", "连接", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &status,
+            &PredefinedMenuItem::separator(app)?,
+            &toggle,
+            &show,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .tooltip("Choclite · 未连接")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "toggle" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = crate::commands::toggle_flow(&app).await;
+                });
+            }
+            "show" => show_main_window(app),
+            "quit" => crate::quit(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+
+    app.manage(TrayItems { status, toggle });
+    Ok(())
+}
+
+pub fn refresh(app: &AppHandle, view: &View) {
+    let Some(items) = app.try_state::<TrayItems>() else {
+        return;
+    };
+    let (status, toggle, toggle_enabled) = match view.phase {
+        Phase::Disconnected => ("未连接", "连接", true),
+        Phase::Connecting => ("正在连接…", "连接", false),
+        Phase::Connected => ("已连接", "断开连接", true),
+        Phase::Disconnecting => ("正在断开…", "断开连接", false),
+    };
+    let _ = items.status.set_text(status);
+    let _ = items.toggle.set_text(toggle);
+    let _ = items.toggle.set_enabled(toggle_enabled);
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(format!("Choclite · {status}")));
+    }
+}
+
+pub fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}

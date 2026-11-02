@@ -4,65 +4,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`clash-rs-desktop` is a native Windows GUI shell for `clash-rs`. It is a Cargo workspace with three crates and requires Rust 1.95+. All commands run from the workspace root.
+`clash-rs-desktop` ships **Choclite**, a minimal desktop client for `clash-rs` ("one switch, it just works"). Tauri 2 shell + SvelteKit (Svelte 5) frontend over a Rust core crate. Windows first; Linux next. macOS is covered by the native Choclite app, not this repo.
+
+`clash-rs` itself is a downloaded sidecar binary — do not depend on or modify `clash-rs`/`clash-lib` from here unless a feature genuinely needs core support.
 
 ## Commands
 
 ```powershell
-# Check everything compiles
-cargo check --workspace --all-targets
-
-# Run all tests
-cargo test --workspace
-
-# Check UI crate (includes windows-reactor dependency resolution)
-cargo check -p clash-rs-desktop-ui --features reactor
-
-# Run UI in dev mode (data stays in .dev/ instead of %PROGRAMDATA%)
-cargo run -p clash-rs-desktop-ui --features reactor -- --dev
-
-# Package portable release
-powershell -ExecutionPolicy Bypass -File .\scripts\package-portable.ps1
+cargo test --workspace                      # Rust tests (core, service, app)
+cd app; pnpm install; pnpm check            # frontend type-check
+cd app; pnpm tauri dev                      # run the app (hot reload)
+cd app; pnpm tauri build                    # NSIS installer
 ```
 
-## Crate Architecture
+Set `CLASH_RS_DESKTOP_CORE=C:\path\to\clash-rs.exe` to use a local core instead of downloading the latest release on first connect.
 
-**`clash-rs-desktop-core`** — no UI dependency; consumed by both the UI and service.
-- `binary_update`: GitHub release fetching, SHA-256 verification, update channel management, rollback.
-- `config_layers`: layered YAML merge (`ConfigLayers` → `RuntimeConfigBuilder` → `GeneratedRuntimeConfig`). Layer order: base profile → global override → profile override → shell runtime override (injects `external-controller-pipe`).
-- `ipc`: `ClashIpcClient` — typed HTTP/WebSocket client over a Windows named pipe to the Clash controller REST API.
-- `process`: `ClashProcessManager` / `CoreLaunchRequest` — spawns and tracks `clash-rs.exe`.
-- `runtime`: `CoreRuntimeManager` — the main seam; orchestrates config generation, validation via `--test-config`, and process lifecycle. Also provides `runtime_options_from_active_profile` and `local_dev_runtime_options`.
-- `service`: `ServiceCommand` / `ServiceResponse` enums (line-delimited JSON protocol), `ServiceSupervisor`, and `pipe_transport` for Windows named-pipe IPC between the UI and the elevated service.
-- `profile`: `ProfileStore`, `ProfileManifest`, `UserProfile` — manifest-backed profile storage.
-- `settings`: `AppSettings`, `SettingsStore`, `SystemProxySettings`, `TunLaunchPolicy`.
-- `system_proxy`, `tun`, `paths`: Windows system proxy primitives, TUN detection, `AppPaths` layout.
+## Layout
 
-**`clash-rs-desktop-service`** — thin binary over the core library.
-- `main.rs`: CLI entrypoints (`--pipe`, `--install`, `--uninstall`, `--start-service`, `--stop-service`, `--service-status`, `--service`) dispatching to stdin host or named-pipe host.
-- `scm.rs`: Windows Service Control Manager integration.
-
-**`clash-rs-desktop-ui`** — gated behind the `reactor` feature; does not compile as a useful binary without it.
-- `main.rs`: parses `--dev` flag, calls `Application::start()` from `windows-reactor`.
-- `app.rs`: root `app()` function — composes all state structs, owns live-refresh timer logic (`use_effect_with_cleanup` + `DispatcherTimer`), builds the `NavigationView`.
-- Action modules — each is synchronous, returns `String` for display in the UI:
-  - `runtime_actions`: start/stop/restart core, manages a process-global `Mutex<Option<CoreRuntimeManager>>`.
-  - `profile_actions`: profile summaries, import, selection, override forms.
-  - `settings_actions`: load/save `AppSettings`, global override YAML, controller endpoint config.
-  - `service_actions`: send `ServiceCommand` over the service named pipe; SCM operations.
-  - `controller_actions`: typed wrappers over `ClashIpcClient` for all dashboard REST endpoints.
-- `controller_endpoint.rs`: persists controller pipe path + secret to `controller-endpoint.json`.
-- `controller_models.rs`: snapshot types (`ProxySnapshot`, `ConnectionsSnapshot`, etc.) built from `ClashIpcClient` responses.
-- `views/`: rendering modules — `dashboard`, `profiles`, `settings`, `service`, `design` (shared widgets: `Toast`, `busy_strip`), `output` (`SafetyState` for two-step destructive actions).
+- `crates/clash-rs-desktop-core` — no UI dependency.
+  - `engine`: **the** orchestration seam. `Engine::connect/disconnect/check_health`; owns the core process, generated config and OS proxy. All shells go through it.
+  - `config_layers`: layered YAML merge. Order: subscription → global override (`override.yaml`) → profile override → shell settings (port, mode, `tun.enable=false`, controller pipe). Overlays support `prepend-`/`append-` + `rules`/`proxies`/`proxy-groups`; named entries replace same-named ones; appended rules land before `MATCH`.
+  - `process`: spawns `clash-rs.exe` inside a kill-on-close **Job Object** and drains stdout/stderr into a bounded `CoreLog`.
+  - `profile`: profile manifest + subscription download (`fetch_subscription`, `subscription-userinfo`, `profile-title`).
+  - `system_proxy`: WinINet proxy via the registry API (+ `InternetSetOption` refresh).
+  - `ipc`: controller REST/WebSocket client over a named pipe.
+  - `binary_update`: GitHub release download of `clash-rs.exe`.
+  - `service`: privileged Windows service protocol — **legacy, not used by the app yet** (see plan).
+- `crates/clash-rs-desktop-service` — SCM service binary (legacy, pending rewrite for TUN).
+- `app/src-tauri` — Tauri backend: `commands.rs` (connect flow, commands, traffic stream, health watchdog), `state.rs` (`View` snapshot), `tray.rs`, `nodes.rs` (main-group/node list derivation).
+- `app/src` — UI. `lib/store.svelte.ts` holds state; `lib/screens/*` are pages; `lib/components/*` shared widgets; design tokens in `app.css`.
 
 ## Key Invariants
 
-**`windows-reactor` is pinned to `rev = "9ed8353d"`** (git dependency from `microsoft/windows-rs`). Commit `7a41196d` breaks `Application::start` with error `0x80040154` — do not advance this pin without testing the app starts.
-
-**`CARGO_WORKSPACE_DIR`** is set to `""` (relative) in `.cargo/config.toml` so the `windows-reactor` build script can find workspace assets; the build writes into `target/windows-reactor` to keep generated `temp/` and `winmd/` folders off the workspace root. Do not remove this env var.
-
-**Dev root vs production root**: `--dev` flag makes `paths.rs` resolve data to `.dev/` (workspace-relative). Without it, paths resolve to `%PROGRAMDATA%\clash-rs-desktop`. The `app_pipe_path()` is always `\\.\pipe\clash-rs-desktop-core-local`; the service pipe is a different constant in `core/src/service.rs`.
-
-**TUN requires the Windows service**: if the merged runtime config has `tun.enable: true`, `launch_requirements_from_config` returns `requires_service = true`. The UI then routes the `StartCore` command over the service named pipe instead of launching `clash-rs.exe` directly. The service binary must be installed and running to accept those commands.
-
-**Controller transport is a Windows named pipe**, not HTTP. `ClashIpcClient` speaks the same REST surface as the web dashboard but over `\\.\pipe\...` using Hyper over a Tokio named-pipe connector.
+- **Never leave the user's proxy pointing at a dead port.** `Engine` writes `runtime/system-proxy-snapshot.json` before changing the OS proxy and deletes it after restoring. On startup a leftover snapshot is restored. Keep the oldest snapshot; never overwrite an existing one.
+- **Disconnect restores the network before stopping the core.**
+- **The UI never waits on the engine lock.** Commands mutate under `AppState.engine` (async mutex, may be held for a download); the UI reads `View`, republished via the `view` event after every change. The watchdog uses `try_lock`.
+- **Errors shown to users are Chinese, short and actionable.** Use `anyhow::Context` with user-facing text at the boundary; raw log lines go to the logs screen, not toasts.
+- **Simple by default**: the home screen is L0 (switch, node, subscription). Clash concepts (rules, groups, YAML) only appear under Settings → 高级.
+- Data root is the per-user app-local data dir (`%LOCALAPPDATA%\com.choclite.desktop`).

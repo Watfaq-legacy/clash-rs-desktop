@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64 = "0.22"
 bytes.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
@@ -28,4 +29,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_System_JobObjects",
+    "Win32_Networking_WinInet",
+    "Win32_System_Registry",
 ] }

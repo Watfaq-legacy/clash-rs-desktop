@@ -1,0 +1,28 @@
+[package]
+name = "clash-rs-desktop"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Desktop client for clash-rs"
+
+[lib]
+# The `_lib` suffix keeps the lib name distinct from the bin name on Windows,
+# see https://github.com/rust-lang/cargo/issues/8519
+name = "clash_rs_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+clash-rs-desktop-core = { path = "../../crates/clash-rs-desktop-core" }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"

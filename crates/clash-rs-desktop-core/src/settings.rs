@@ -4,19 +4,47 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CoreUpdateSettings, SystemProxyTarget, UpdateChannel, WindowsArch};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppSettings {
     pub updates: CoreUpdateSettings,
     pub system_proxy: SystemProxySettings,
     pub tun: TunLaunchPolicy,
+    #[serde(default)]
+    pub connect_mode: ConnectMode,
+    #[serde(default)]
+    pub routing_mode: RoutingMode,
+    /// Connect as soon as the app starts.
+    #[serde(default)]
+    pub auto_connect: bool,
 }
 
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            updates: CoreUpdateSettings::default(),
-            system_proxy: SystemProxySettings::default(),
-            tun: TunLaunchPolicy::default(),
+/// How traffic reaches the core.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConnectMode {
+    /// Set the OS proxy to the core's mixed port. No elevation needed.
+    #[default]
+    SystemProxy,
+    /// Capture all traffic with a TUN device. Needs the privileged service.
+    Tun,
+}
+
+/// Clash `mode`: which traffic goes through the proxy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RoutingMode {
+    #[default]
+    Rule,
+    Global,
+    Direct,
+}
+
+impl RoutingMode {
+    pub fn as_clash(self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Global => "global",
+            Self::Direct => "direct",
         }
     }
 }

@@ -1,5 +1,6 @@
 pub mod binary_update;
 pub mod config_layers;
+pub mod engine;
 pub mod ipc;
 pub mod paths;
 pub mod process;
@@ -29,15 +30,19 @@ pub use process::{
     ClashProcessManager, CoreLaunchRequest, CoreOwner, CoreState, ElevationReason,
     LaunchRequirements,
 };
+pub use engine::Engine;
 pub use profile::{
-    ProfileId, ProfileManifest, ProfileSource, ProfileStore, UserProfile, default_profile_yaml,
+    FetchedSubscription, ProfileId, ProfileManifest, ProfileSource, ProfileStore,
+    SubscriptionInfo, UserProfile, default_profile_yaml, fetch_subscription,
 };
 pub use runtime::{
     CoreRuntimeManager, RuntimeLaunchOptions, RuntimeStatus, local_dev_runtime_options,
     runtime_options_from_active_profile,
 };
 pub use service::{ServiceCommand, ServiceResponse, ServiceSupervisor, pipe_transport};
-pub use settings::{AppSettings, SettingsStore, SystemProxySettings, TunLaunchPolicy};
+pub use settings::{
+    AppSettings, ConnectMode, RoutingMode, SettingsStore, SystemProxySettings, TunLaunchPolicy,
+};
 pub use system_proxy::{
     SystemProxyBackend, SystemProxySnapshot, SystemProxyTarget, WindowsSystemProxy,
 };
