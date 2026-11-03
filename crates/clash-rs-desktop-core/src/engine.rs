@@ -322,6 +322,7 @@ impl Engine {
             local: &self.local,
             mixed_port: port,
             mode: settings.routing_mode.as_clash(),
+            tun_ipv6: settings.tun_ipv6,
             tun,
             controller_ipc,
             controller_http: None,
@@ -371,6 +372,7 @@ impl Engine {
         match &result {
             Ok(()) => {
                 self.mixed_port = Some(port);
+                self.restore_selections().await;
                 self.note(match mode {
                     ConnectMode::SystemProxy => "已连接（系统代理）",
                     ConnectMode::Tun => "已连接（增强模式）",
@@ -547,7 +549,38 @@ impl Engine {
             }
             None => {}
         }
+        self.restore_selections().await;
         Ok(())
+    }
+
+    /// Remember a node the user picked in a selector group of the active
+    /// profile, so it survives restarts, mode switches and reloads.
+    pub fn remember_selection(&mut self, group: &str, node: &str) -> anyhow::Result<()> {
+        let Some(profile) = self.profiles.active_profile().map(|p| p.id.0.clone()) else {
+            return Ok(());
+        };
+        let store = &mut self.settings;
+        store
+            .settings_mut()
+            .selections
+            .entry(profile)
+            .or_default()
+            .insert(group.to_owned(), node.to_owned());
+        store.save()
+    }
+
+    /// Re-apply remembered picks. Groups or nodes that no longer exist
+    /// (subscription changed) are skipped silently.
+    async fn restore_selections(&self) {
+        let (Some(client), Some(profile)) = (&self.controller, self.profiles.active_profile()) else {
+            return;
+        };
+        let Some(picks) = self.settings.settings().selections.get(&profile.id.0) else {
+            return;
+        };
+        for (group, node) in picks {
+            let _ = client.select_proxy(group, node).await;
+        }
     }
 
     /// Poll from the shell. If the core died while we were connected, clean
@@ -728,6 +761,12 @@ impl Engine {
                     anyhow::bail!(message);
                 }
                 Ok(())
+            }
+            Fix::EnableTunIpv6 => {
+                // The shell reconnects so the device gets its IPv6 address.
+                let store = &mut self.settings;
+                store.settings_mut().tun_ipv6 = true;
+                store.save()
             }
             Fix::Reconnect | Fix::EnableTun => Ok(()),
         }

@@ -137,6 +137,17 @@
         {/snippet}
       </Row>
       {#if reconnectNote}<p class="note">将在下次连接时生效</p>{/if}
+      {#if view.connectMode === "tun"}
+        <Row label="同时接管 IPv6" hint="网络有 IPv6 时开启，避免支持 IPv6 的网站绕过代理">
+          {#snippet trailing()}
+            <Switch
+              label="同时接管 IPv6"
+              checked={view.tunIpv6}
+              onchange={(on) => app.run(() => api.setTunIpv6(on))}
+            />
+          {/snippet}
+        </Row>
+      {/if}
       <Row
         label="网站规则"
         hint={view.customRules.length ? `${view.customRules.length} 条规则` : "指定网站走代理、直连或拦截"}

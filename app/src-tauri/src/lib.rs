@@ -117,6 +117,7 @@ pub fn run() {
             commands::open_logs_dir,
             commands::run_diagnostics,
             commands::apply_fix,
+            commands::set_tun_ipv6,
             quit_app,
         ])
         .build(tauri::generate_context!())

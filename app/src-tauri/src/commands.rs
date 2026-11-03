@@ -475,6 +475,25 @@ pub async fn set_bypass(app: AppHandle, entries: Vec<String>) -> CmdResult<View>
     apply_config_change(&app).await
 }
 
+/// "增强模式接管 IPv6". Takes effect on the next TUN connection; reconnects
+/// now if TUN is live.
+#[tauri::command]
+pub async fn set_tun_ipv6(app: AppHandle, enabled: bool) -> CmdResult<View> {
+    {
+        let state = app.state::<AppState>();
+        let mut engine = state.engine.lock().await;
+        let store = engine.settings_mut();
+        store.settings_mut().tun_ipv6 = enabled;
+        store.save().map_err(user_error)?;
+        publish(&app, |view| sync_from_engine(view, &engine));
+    }
+    let view = app.state::<AppState>().view();
+    if view.phase == Phase::Connected && view.connected_mode == Some(ConnectMode::Tun) {
+        return reconnect(&app).await;
+    }
+    Ok(view)
+}
+
 /// Stop warning about a program going around the proxy.
 #[tauri::command]
 pub async fn ignore_leak(app: AppHandle, app_name: String) -> CmdResult<View> {
@@ -522,6 +541,10 @@ pub async fn apply_fix(app: AppHandle, fix: clash_rs_desktop_core::diagnose::Fix
                 store.save().map_err(user_error)?;
             }
             if connected { reconnect(&app).await? } else { connect_flow(&app).await? }
+        }
+        Fix::EnableTunIpv6 => {
+            state.engine.lock().await.apply_fix(fix).await.map_err(user_error)?;
+            if connected { reconnect(&app).await? } else { state.view() }
         }
         other => {
             let mut engine = state.engine.lock().await;
@@ -796,6 +819,8 @@ pub async fn select_node(
 ) -> CmdResult<NodesView> {
     let client = controller(&state).await?;
     client.select_proxy(&group, &name).await.map_err(user_error)?;
+    // Remembered per subscription; restored on every connect/reload.
+    let _ = state.engine.lock().await.remember_selection(&group, &name);
     // Drop connections still pinned to the old node so the switch is felt now.
     let _ = client.close_all_connections().await;
     let proxies = client.get_proxies().await.map_err(user_error)?;

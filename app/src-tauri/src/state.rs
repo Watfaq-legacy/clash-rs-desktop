@@ -70,6 +70,7 @@ pub struct View {
     pub leaks: Vec<String>,
     /// Most serious problem the background check found, if any.
     pub health_issue: Option<String>,
+    pub tun_ipv6: bool,
     pub core_version: Option<String>,
     pub app_version: &'static str,
 }
@@ -93,6 +94,7 @@ impl AppState {
             bypass: Vec::new(),
             leaks: Vec::new(),
             health_issue: None,
+            tun_ipv6: false,
             core_version: None,
             app_version: env!("CARGO_PKG_VERSION"),
         };
@@ -124,6 +126,7 @@ pub fn sync_from_engine(view: &mut View, engine: &Engine) {
     view.auto_update_subscriptions = settings.auto_update_subscriptions;
     view.custom_rules = settings.custom_rules.clone();
     view.bypass = settings.bypass.clone();
+    view.tun_ipv6 = settings.tun_ipv6;
     view.connected_mode = engine.connected_mode();
     view.port = engine.mixed_port();
     view.core_version = engine.core_version();

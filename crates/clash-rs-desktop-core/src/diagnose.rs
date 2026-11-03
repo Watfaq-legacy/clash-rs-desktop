@@ -28,6 +28,7 @@ pub enum Fix {
     RestoreSystemProxy,
     FlushDns,
     EnableTun,
+    EnableTunIpv6,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -87,6 +88,9 @@ pub struct SystemState {
     /// Other active VPN/tunnel adapters: "name (description)".
     pub other_vpns: Vec<String>,
     pub has_global_ipv6: bool,
+    /// A global IPv6 address alone means little: many ISPs/routers hand
+    /// one out without working IPv6 internet. Only reachable IPv6 can leak.
+    pub ipv6_reachable: bool,
     /// What the OS resolver returned for a public name.
     pub resolved: Option<String>,
     pub proxy_enabled: bool,
@@ -281,17 +285,21 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
     }
 
     if sys.has_global_ipv6
+        && sys.ipv6_reachable
         && sys
             .route6
             .as_deref()
             .is_some_and(|route| !route.eq_ignore_ascii_case(tun))
     {
-        out.push(Finding::new(
-            "ipv6-bypass",
-            Level::Warn,
-            "IPv6 流量会绕过增强模式",
-            "你的网络有公网 IPv6，但增强模式只接管了 IPv4。支持 IPv6 的网站可能直接连接，不经过代理。",
-        ));
+        out.push(
+            Finding::new(
+                "ipv6-bypass",
+                Level::Warn,
+                "IPv6 流量会绕过增强模式",
+                "你的网络有公网 IPv6，但增强模式只接管了 IPv4。支持 IPv6 的网站可能直接连接，不经过代理。开启后增强模式会同时接管 IPv6。",
+            )
+            .fix(Fix::EnableTunIpv6),
+        );
     }
 
     if !sys.other_vpns.is_empty() {
@@ -362,42 +370,225 @@ pub fn collect(mixed_port: Option<u16>, routes: bool) -> SystemState {
     sys.port_listening = port.is_some_and(|p| {
         std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], p).into(), std::time::Duration::from_millis(500)).is_ok()
     });
-    sys.internet_reachable = ["223.5.5.5:53", "1.1.1.1:53", "8.8.8.8:53"].iter().any(|addr| {
-        std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), std::time::Duration::from_millis(1500)).is_ok()
-    });
+    let reachable = |addrs: &[&str]| {
+        addrs.iter().any(|addr| {
+            std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), std::time::Duration::from_millis(1500))
+                .is_ok()
+        })
+    };
+    sys.internet_reachable = reachable(&["223.5.5.5:53", "1.1.1.1:53", "8.8.8.8:53"]);
+    if routes && sys.has_global_ipv6 {
+        sys.ipv6_reachable = reachable(&["[2606:4700:4700::1111]:443", "[2400:3200::1]:53"]);
+    }
     sys
 }
 
 #[cfg(windows)]
 mod platform {
+    //! Native IP Helper calls only. (An earlier version shelled out to a
+    //! hidden PowerShell, which antivirus heuristics rightly find suspicious
+    //! in an unsigned app.)
+
+    use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+
+    use windows::Win32::{
+        Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR},
+        NetworkManagement::{
+            IpHelper::{
+                GAA_FLAG_INCLUDE_ALL_INTERFACES, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
+                GetAdaptersAddresses, GetBestInterfaceEx, IP_ADAPTER_ADDRESSES_LH,
+            },
+            Ndis::IfOperStatusUp,
+        },
+        Networking::WinSock::{
+            AF_INET, AF_INET6, AF_UNSPEC, IpPrefixOriginDhcp, IpPrefixOriginRouterAdvertisement,
+            SOCKADDR, SOCKADDR_IN, SOCKADDR_IN6,
+        },
+    };
+
     use super::SystemState;
 
-    /// One PowerShell round-trip; the NetTCPIP cmdlets answer route
-    /// questions exactly as the OS would route a packet.
-    const SCRIPT: &str = r#"
-$ErrorActionPreference = 'SilentlyContinue'
-$r4 = (Find-NetRoute -RemoteIPAddress 1.1.1.1 | Where-Object InterfaceAlias | Select-Object -First 1).InterfaceAlias
-$r6 = (Find-NetRoute -RemoteIPAddress 2606:4700:4700::1111 | Where-Object InterfaceAlias | Select-Object -First 1).InterfaceAlias
-$tun = Get-NetAdapter -IncludeHidden | Where-Object Name -like 'utun*' | Select-Object -First 1
-$tunIps = @()
-if ($tun) { $tunIps = @((Get-NetIPAddress -InterfaceIndex $tun.ifIndex -AddressFamily IPv4).IPAddress) }
-$pattern = 'WireGuard|Wintun|TAP-|Tailscale|ZeroTier|OpenVPN|AnyConnect|Cisco|Fortinet|GlobalProtect|PANGP|Juniper|Pulse Secure|SonicWall|Mullvad|NordLynx|ProtonVPN|ExpressVPN|Clash|sing-box|Hiddify'
-$vpn = @(Get-NetAdapter | Where-Object { $_.Status -eq 'Up' -and $_.Name -notlike 'utun*' -and ($_.InterfaceDescription -match $pattern -or $_.Name -match $pattern) } | ForEach-Object { $_.Name + ' (' + $_.InterfaceDescription + ')' })
-$v6 = [bool](Get-NetIPAddress -AddressFamily IPv6 | Where-Object { $_.PrefixOrigin -in 'RouterAdvertisement','Dhcp' -and $_.IPAddress -match '^[23]' })
-$dns = (Resolve-DnsName www.example.com -Type A -DnsOnly -QuickTimeout | Where-Object IPAddress | Select-Object -First 1).IPAddress
-@{ route4 = $r4; route6 = $r6; tunName = $tun.Name; tunUp = ($tun.Status -eq 'Up'); tunIps = $tunIps; otherVpns = $vpn; hasGlobalIpv6 = $v6; resolved = $dns } | ConvertTo-Json -Compress
-"#;
+    const VPN_HINTS: [&str; 18] = [
+        "wireguard",
+        "wintun",
+        "tap-",
+        "tailscale",
+        "zerotier",
+        "openvpn",
+        "anyconnect",
+        "cisco",
+        "fortinet",
+        "globalprotect",
+        "pangp",
+        "juniper",
+        "pulse secure",
+        "sonicwall",
+        "mullvad",
+        "nordlynx",
+        "protonvpn",
+        "sing-box",
+    ];
+
+    struct Adapter {
+        index: u32,
+        index6: u32,
+        name: String,
+        description: String,
+        up: bool,
+        ipv4: Vec<String>,
+        global_ipv6: bool,
+    }
+
+    fn wide(ptr: windows::core::PWSTR) -> String {
+        // SAFETY: the OS hands back NUL-terminated strings inside the
+        // adapter buffer, which outlives this call.
+        unsafe { ptr.to_string().unwrap_or_default() }
+    }
+
+    fn adapters() -> Vec<Adapter> {
+        let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_INCLUDE_ALL_INTERFACES;
+        let mut size = 16 * 1024u32;
+        let mut buf: Vec<u64>;
+        // SAFETY: a u64-aligned buffer of `size` bytes, grown on overflow;
+        // the linked list it receives is only read while `buf` is alive.
+        unsafe {
+            loop {
+                buf = vec![0u64; (size as usize).div_ceil(8)];
+                let ret = GetAdaptersAddresses(
+                    AF_UNSPEC.0 as u32,
+                    flags,
+                    None,
+                    Some(buf.as_mut_ptr().cast()),
+                    &mut size,
+                );
+                if ret == ERROR_BUFFER_OVERFLOW.0 {
+                    continue;
+                }
+                if ret != NO_ERROR.0 {
+                    return Vec::new();
+                }
+                break;
+            }
+
+            let mut out = Vec::new();
+            let mut node = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+            while let Some(adapter) = node.as_ref() {
+                let mut ipv4 = Vec::new();
+                let mut global_ipv6 = false;
+                let mut unicast = adapter.FirstUnicastAddress;
+                while let Some(addr) = unicast.as_ref() {
+                    if let Some(ip) = sockaddr_ip(addr.Address.lpSockaddr) {
+                        match ip {
+                            IpAddr::V4(v4) => ipv4.push(v4.to_string()),
+                            IpAddr::V6(v6) => {
+                                let origin = addr.PrefixOrigin;
+                                let routable = (v6.segments()[0] & 0xe000) == 0x2000;
+                                if routable
+                                    && (origin == IpPrefixOriginRouterAdvertisement
+                                        || origin == IpPrefixOriginDhcp)
+                                {
+                                    global_ipv6 = true;
+                                }
+                            }
+                        }
+                    }
+                    unicast = addr.Next;
+                }
+                out.push(Adapter {
+                    index: adapter.Anonymous1.Anonymous.IfIndex,
+                    index6: adapter.Ipv6IfIndex,
+                    name: wide(adapter.FriendlyName),
+                    description: wide(adapter.Description),
+                    up: adapter.OperStatus == IfOperStatusUp,
+                    ipv4,
+                    global_ipv6,
+                });
+                node = adapter.Next;
+            }
+            out
+        }
+    }
+
+    fn sockaddr_ip(addr: *const SOCKADDR) -> Option<IpAddr> {
+        // SAFETY: the family field tells which concrete sockaddr this is.
+        unsafe {
+            let addr = addr.as_ref()?;
+            if addr.sa_family == AF_INET {
+                let v4 = &*(addr as *const SOCKADDR as *const SOCKADDR_IN);
+                Some(IpAddr::from(v4.sin_addr.S_un.S_addr.to_ne_bytes()))
+            } else if addr.sa_family == AF_INET6 {
+                let v6 = &*(addr as *const SOCKADDR as *const SOCKADDR_IN6);
+                Some(IpAddr::from(v6.sin6_addr.u.Byte))
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Which interface the OS would use to reach `ip`.
+    fn best_interface(ip: IpAddr) -> Option<u32> {
+        let mut index = 0u32;
+        // SAFETY: the sockaddr lives on the stack for the duration of the call.
+        let ret = unsafe {
+            match ip {
+                IpAddr::V4(v4) => {
+                    let mut sa = SOCKADDR_IN {
+                        sin_family: AF_INET,
+                        ..Default::default()
+                    };
+                    sa.sin_addr.S_un.S_addr = u32::from_ne_bytes(v4.octets());
+                    GetBestInterfaceEx(&sa as *const SOCKADDR_IN as *const SOCKADDR, &mut index)
+                }
+                IpAddr::V6(v6) => {
+                    let mut sa = SOCKADDR_IN6 {
+                        sin6_family: AF_INET6,
+                        ..Default::default()
+                    };
+                    sa.sin6_addr.u.Byte = v6.octets();
+                    GetBestInterfaceEx(&sa as *const SOCKADDR_IN6 as *const SOCKADDR, &mut index)
+                }
+            }
+        };
+        (ret == NO_ERROR.0).then_some(index)
+    }
 
     pub fn collect() -> SystemState {
-        use std::os::windows::process::CommandExt as _;
-        let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", SCRIPT])
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-            .output();
-        output
+        let adapters = adapters();
+        let name_of = |index: Option<u32>, v6: bool| {
+            let index = index?;
+            adapters
+                .iter()
+                .find(|a| if v6 { a.index6 == index } else { a.index == index })
+                .map(|a| a.name.clone())
+        };
+
+        let mut sys = SystemState {
+            route4: name_of(best_interface("1.1.1.1".parse().unwrap()), false),
+            route6: name_of(best_interface("2606:4700:4700::1111".parse().unwrap()), true),
+            has_global_ipv6: adapters.iter().any(|a| a.up && a.global_ipv6),
+            ..Default::default()
+        };
+        if let Some(tun) = adapters.iter().find(|a| a.name.to_ascii_lowercase().starts_with("utun")) {
+            sys.tun_name = Some(tun.name.clone());
+            sys.tun_up = tun.up;
+            sys.tun_ips = tun.ipv4.clone();
+        }
+        sys.other_vpns = adapters
+            .iter()
+            .filter(|a| a.up && !a.name.to_ascii_lowercase().starts_with("utun"))
+            .filter(|a| {
+                let text = format!("{} {}", a.name, a.description).to_ascii_lowercase();
+                VPN_HINTS.iter().any(|hint| text.contains(hint))
+            })
+            .map(|a| format!("{} ({})", a.name, a.description))
+            .collect();
+        // The system resolver, as every app sees it.
+        sys.resolved = ("www.example.com", 80)
+            .to_socket_addrs()
             .ok()
-            .and_then(|out| serde_json::from_slice(&out.stdout).ok())
-            .unwrap_or_default()
+            .and_then(|mut addrs| addrs.find(SocketAddr::is_ipv4))
+            .map(|addr| addr.ip().to_string());
+        sys
     }
 }
 
@@ -508,6 +699,7 @@ mod tests {
         let sys = SystemState {
             resolved: Some("93.184.216.34".into()),
             has_global_ipv6: true,
+            ipv6_reachable: true,
             route6: Some("Wi-Fi".into()),
             ..healthy_tun()
         };
@@ -515,6 +707,12 @@ mod tests {
         for id in ["route-loop", "dns-bypass", "ipv6-bypass"] {
             assert!(ids(&findings).contains(&id), "missing {id}");
         }
+        // An IPv6 address without working IPv6 internet can't leak.
+        let dead_v6 = SystemState {
+            ipv6_reachable: false,
+            ..sys
+        };
+        assert!(!ids(&assess(&ctx, &dead_v6)).contains(&"ipv6-bypass"));
         assert_eq!(findings.iter().find(|f| f.id == "route-loop").unwrap().fix, Some(Fix::Reconnect));
     }
 

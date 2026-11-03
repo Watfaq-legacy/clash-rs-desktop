@@ -28,6 +28,14 @@ pub struct AppSettings {
     /// Programs the user chose not to be warned about bypassing the proxy.
     #[serde(default)]
     pub ignored_leak_apps: Vec<String>,
+    /// Give the TUN device an IPv6 address so IPv6 traffic is captured too.
+    #[serde(default)]
+    pub tun_ipv6: bool,
+    /// Last node picked per selector group, per profile id. Restored after
+    /// every connect/reload, independent of the core's own cache (which
+    /// differs between system-proxy and TUN mode).
+    #[serde(default)]
+    pub selections: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
 
 fn default_true() -> bool {
@@ -47,6 +55,8 @@ impl Default for AppSettings {
             auto_update_subscriptions: true,
             bypass: Vec::new(),
             ignored_leak_apps: Vec::new(),
+            tun_ipv6: false,
+            selections: Default::default(),
         }
     }
 }

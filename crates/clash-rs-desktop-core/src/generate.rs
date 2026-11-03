@@ -112,6 +112,8 @@ pub struct ConfigInputs<'a> {
     pub mixed_port: u16,
     pub mode: &'a str,
     pub tun: bool,
+    /// Capture IPv6 as well under TUN (otherwise it bypasses the tunnel).
+    pub tun_ipv6: bool,
     /// Windows named pipe / unix socket path for the controller.
     pub controller_ipc: Option<&'a str>,
     /// TCP controller address (used where no IPC transport is available).
@@ -148,17 +150,28 @@ pub fn generate(inputs: ConfigInputs<'_>) -> Value {
         ("mode", Value::from(inputs.mode)),
     ]);
     let shell_map = shell.as_mapping_mut().expect("mapping");
+    // Keep the user's node picks across restarts even if a subscription
+    // turns this off (the app also restores them itself).
+    shell_map.insert("profile".into(), mapping([("store-selected", true.into())]));
     if inputs.tun {
-        shell_map.insert(
-            "tun".into(),
-            mapping([
-                ("enable", true.into()),
-                ("route-all", true.into()),
-                ("dns-hijack", true.into()),
-            ]),
-        );
+        let mut tun = mapping([
+            ("enable", true.into()),
+            ("route-all", true.into()),
+            ("dns-hijack", true.into()),
+        ]);
+        let mut dns = mapping([("enable", true.into())]);
+        if inputs.tun_ipv6 {
+            // An IPv6 address on the device makes route-all add the IPv6
+            // default route too; AAAA answers are needed for apps to use it.
+            tun.as_mapping_mut()
+                .expect("mapping")
+                .insert("gateway-v6".into(), "fdfe:dcba:9876::1/126".into());
+            dns.as_mapping_mut().expect("mapping").insert("ipv6".into(), true.into());
+            shell_map.insert("ipv6".into(), true.into());
+        }
+        shell_map.insert("tun".into(), tun);
         // TUN hijacks DNS into the core, so its DNS server must be on.
-        shell_map.insert("dns".into(), mapping([("enable", true.into())]));
+        shell_map.insert("dns".into(), dns);
     } else {
         shell_map.insert("tun".into(), mapping([("enable", false.into())]));
     }
@@ -458,6 +471,7 @@ mod tests {
             mixed_port: 7890,
             mode: "rule",
             tun,
+            tun_ipv6: false,
             controller_ipc: Some(r"\\.\pipe\x"),
             controller_http: None,
         }
@@ -486,6 +500,21 @@ mod tests {
         assert_eq!(config["tun"]["enable"], Value::from(false));
         // No TUN: DNS is left alone.
         assert!(config["dns"].get("nameserver-policy").is_none());
+    }
+
+    #[test]
+    fn tun_ipv6_adds_gateway_and_aaaa_and_selection_is_kept() {
+        let off = generate(inputs(&[], true));
+        assert!(off["tun"].get("gateway-v6").is_none());
+        assert_eq!(off["profile"]["store-selected"], Value::from(true));
+
+        let on = generate(ConfigInputs {
+            tun_ipv6: true,
+            ..inputs(&[], true)
+        });
+        assert_eq!(on["tun"]["gateway-v6"], Value::from("fdfe:dcba:9876::1/126"));
+        assert_eq!(on["dns"]["ipv6"], Value::from(true));
+        assert_eq!(on["ipv6"], Value::from(true));
     }
 
     #[test]

@@ -47,6 +47,7 @@ export interface View {
   bypass: string[];
   leaks: string[];
   healthIssue: string | null;
+  tunIpv6: boolean;
   coreVersion: string | null;
   appVersion: string;
 }
@@ -79,7 +80,13 @@ export interface CoreUpdateInfo {
 }
 
 export type FindingLevel = "ok" | "info" | "warn" | "error";
-export type Fix = "reconnect" | "reapply-system-proxy" | "restore-system-proxy" | "flush-dns" | "enable-tun";
+export type Fix =
+  | "reconnect"
+  | "reapply-system-proxy"
+  | "restore-system-proxy"
+  | "flush-dns"
+  | "enable-tun"
+  | "enable-tun-ipv6";
 
 export interface Finding {
   id: string;
@@ -129,6 +136,7 @@ export const api = {
   openLogsDir: () => invoke<void>("open_logs_dir"),
   runDiagnostics: () => invoke<Finding[]>("run_diagnostics"),
   applyFix: (fix: Fix) => invoke<View>("apply_fix", { fix }),
+  setTunIpv6: (enabled: boolean) => invoke<View>("set_tun_ipv6", { enabled }),
   quit: () => invoke<void>("quit_app"),
 };
 

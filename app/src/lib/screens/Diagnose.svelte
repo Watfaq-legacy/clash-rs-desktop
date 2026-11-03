@@ -15,6 +15,7 @@
     "restore-system-proxy": "关闭失效的代理",
     "flush-dns": "清理 DNS 缓存",
     "enable-tun": "开启增强模式",
+    "enable-tun-ipv6": "一键开启 IPv6 接管",
   };
 
   async function run() {
