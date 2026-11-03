@@ -90,11 +90,47 @@ pub fn uninstall() -> anyhow::Result<()> {
     let _ = fs::remove_dir_all(&paths.data_dir);
     if let Ok(entries) = fs::read_dir(&paths.install_dir) {
         for entry in entries.flatten() {
-            let _ = fs::remove_file(entry.path());
+            // The exe running this uninstall can't delete itself; have
+            // Windows remove it at the next boot instead of leaving it.
+            if fs::remove_file(entry.path()).is_err() {
+                delete_on_reboot(&entry.path());
+            }
         }
     }
-    let _ = fs::remove_dir(&paths.install_dir);
+    for dir in [
+        paths.install_dir.clone(),
+        paths
+            .install_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
+        paths
+            .data_dir
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
+    ] {
+        // Directories go only once empty; queued after the files above.
+        if fs::remove_dir(&dir).is_err() && dir.exists() {
+            delete_on_reboot(&dir);
+        }
+    }
     Ok(())
+}
+
+fn delete_on_reboot(path: &Path) {
+    use windows::{
+        Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW},
+        core::HSTRING,
+    };
+    // SAFETY: plain Win32 call; needs admin, which the uninstaller has.
+    unsafe {
+        let _ = MoveFileExW(
+            &HSTRING::from(path.as_os_str()),
+            None,
+            MOVEFILE_DELAY_UNTIL_REBOOT,
+        );
+    }
 }
 
 /// SYSTEM and Administrators: full. Users: read & execute. No inheritance,
