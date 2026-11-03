@@ -31,12 +31,10 @@ pub use ipc::{
 pub use paths::AppPaths;
 pub use process::{ClashProcessManager, CoreLaunchRequest, CoreLog, CoreState};
 pub use profile::{
-    FetchedSubscription, ProfileId, ProfileManifest, ProfileSource, ProfileStore,
-    SubscriptionInfo, UserProfile, default_profile_yaml, fetch_subscription,
+    FetchedSubscription, ProfileId, ProfileManifest, ProfileSource, ProfileStore, SubscriptionInfo,
+    UserProfile, default_profile_yaml, fetch_subscription,
 };
-pub use settings::{
-    AppSettings, ConnectMode, RoutingMode, SettingsStore, SystemProxySettings, TunLaunchPolicy,
-};
+pub use settings::{AppSettings, ConnectMode, RoutingMode, SettingsStore, SystemProxySettings};
 pub use system_proxy::{
     PlatformSystemProxy, SystemProxyBackend, SystemProxySnapshot, SystemProxyTarget,
 };

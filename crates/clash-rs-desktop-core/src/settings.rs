@@ -8,7 +8,6 @@ use crate::{CoreUpdateSettings, SystemProxyTarget, UpdateChannel, WindowsArch};
 pub struct AppSettings {
     pub updates: CoreUpdateSettings,
     pub system_proxy: SystemProxySettings,
-    pub tun: TunLaunchPolicy,
     #[serde(default)]
     pub connect_mode: ConnectMode,
     #[serde(default)]
@@ -47,7 +46,6 @@ impl Default for AppSettings {
         Self {
             updates: CoreUpdateSettings::default(),
             system_proxy: SystemProxySettings::default(),
-            tun: TunLaunchPolicy::default(),
             connect_mode: ConnectMode::default(),
             routing_mode: RoutingMode::default(),
             auto_connect: false,
@@ -106,19 +104,6 @@ impl Default for SystemProxySettings {
             target: SystemProxyTarget::loopback_mixed_port(7890),
             restore_on_exit: true,
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum TunLaunchPolicy {
-    RequireService,
-    DenyUntilServiceInstalled,
-}
-
-impl Default for TunLaunchPolicy {
-    fn default() -> Self {
-        Self::RequireService
     }
 }
 

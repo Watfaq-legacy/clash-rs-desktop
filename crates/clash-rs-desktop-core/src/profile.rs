@@ -102,7 +102,10 @@ pub async fn fetch_subscription(url: &str) -> anyhow::Result<FetchedSubscription
         .build()?
         .get(parsed.clone())
         // Providers pick the output format from the UA; this gets Clash YAML.
-        .header(reqwest::header::USER_AGENT, "clash.meta clash-rs-desktop/0.1")
+        .header(
+            reqwest::header::USER_AGENT,
+            "clash.meta clash-rs-desktop/0.1",
+        )
         .send()
         .await
         .map_err(|error| anyhow::anyhow!("无法下载订阅：{error}"))?;
@@ -182,7 +185,10 @@ fn filename_from_disposition(raw: &str) -> Option<String> {
     let name = pick("filename*=")
         .and_then(|v| v.split_once("''").map(|(_, rest)| percent_decode(rest)))
         .or_else(|| pick("filename="))?;
-    let name = name.trim_end_matches(".yaml").trim_end_matches(".yml").trim();
+    let name = name
+        .trim_end_matches(".yaml")
+        .trim_end_matches(".yml")
+        .trim();
     (!name.is_empty()).then(|| name.to_owned())
 }
 
@@ -310,11 +316,19 @@ impl ProfileStore {
             .ok_or_else(|| anyhow::anyhow!("没有识别到支持的节点链接"))?;
         let count = config["proxies"].as_sequence().map_or(0, Vec::len);
         let name = if count == 1 {
-            config["proxies"][0]["name"].as_str().unwrap_or("我的节点").to_owned()
+            config["proxies"][0]["name"]
+                .as_str()
+                .unwrap_or("我的节点")
+                .to_owned()
         } else {
             format!("我的节点（{count} 个）")
         };
-        self.import_content(paths, &name, ProfileSource::InlineTemplate, &serde_yaml::to_string(&config)?)
+        self.import_content(
+            paths,
+            &name,
+            ProfileSource::InlineTemplate,
+            &serde_yaml::to_string(&config)?,
+        )
     }
 
     fn import_content(
@@ -480,16 +494,17 @@ impl ProfileStore {
                     return None;
                 };
                 let hours = i64::from(profile.update_interval_hours.unwrap_or(12));
-                let due = profile
-                    .updated_at
-                    .is_none_or(|at| now - at >= hours * 3600);
+                let due = profile.updated_at.is_none_or(|at| now - at >= hours * 3600);
                 due.then(|| (profile.id.clone(), url.clone()))
             })
             .collect()
     }
 
     pub fn profile(&self, id: &ProfileId) -> Option<&UserProfile> {
-        self.manifest.profiles.iter().find(|profile| &profile.id == id)
+        self.manifest
+            .profiles
+            .iter()
+            .find(|profile| &profile.id == id)
     }
 
     pub fn remove(&mut self, id: &ProfileId) -> Option<UserProfile> {
@@ -646,8 +661,8 @@ mod tests {
         assert_eq!(info.total, 10_737_418_240);
         assert_eq!(info.expire, Some(1_767_225_600));
 
-        let no_expiry = SubscriptionInfo::parse_header("upload=0; download=0; total=1; expire=")
-            .unwrap();
+        let no_expiry =
+            SubscriptionInfo::parse_header("upload=0; download=0; total=1; expire=").unwrap();
         assert_eq!(no_expiry.expire, None);
         assert!(SubscriptionInfo::parse_header("garbage").is_none());
     }
@@ -736,7 +751,11 @@ mod tests {
         store.upsert(remote("hourly", Some(now - 2 * 3600), Some(1)));
         store.upsert(remote("never", None, None));
 
-        let mut due: Vec<String> = store.due_for_refresh().into_iter().map(|(id, _)| id.0).collect();
+        let mut due: Vec<String> = store
+            .due_for_refresh()
+            .into_iter()
+            .map(|(id, _)| id.0)
+            .collect();
         due.sort();
         assert_eq!(due, ["hourly", "never", "stale"]);
     }

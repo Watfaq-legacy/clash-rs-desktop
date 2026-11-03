@@ -137,15 +137,19 @@ fn ensure_wintun(dir: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let zip = runtime()?.block_on(async {
-        reqwest::get(WINTUN_URL)
-            .await?
-            .error_for_status()?
-            .bytes()
-            .await
-    })
-    .context("failed to download wintun")?;
-    anyhow::ensure!(sha256_hex(&zip) == WINTUN_ZIP_SHA256, "wintun download hash mismatch");
+    let zip = runtime()?
+        .block_on(async {
+            reqwest::get(WINTUN_URL)
+                .await?
+                .error_for_status()?
+                .bytes()
+                .await
+        })
+        .context("failed to download wintun")?;
+    anyhow::ensure!(
+        sha256_hex(&zip) == WINTUN_ZIP_SHA256,
+        "wintun download hash mismatch"
+    );
 
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip))?;
     let mut dll = Vec::new();
@@ -159,14 +163,18 @@ fn download_core(paths: &ServicePaths) -> anyhow::Result<()> {
     use clash_rs_desktop_core::{CoreUpdateManager, CoreUpdateSettings, ManagedCoreFiles};
     runtime()?.block_on(async {
         let manager = CoreUpdateManager::new();
-        let check = manager.check_latest(&CoreUpdateSettings::default(), None).await?;
+        let check = manager
+            .check_latest(&CoreUpdateSettings::default(), None)
+            .await?;
         let files = ManagedCoreFiles {
             current_binary: paths.core_binary(),
             rollback_binary: paths.install_dir.join("clash-rs.rollback.exe"),
             wintun_dll: paths.install_dir.join("wintun.dll"),
             active_metadata: paths.install_dir.join("core.json"),
         };
-        manager.download_and_activate(&check.candidate, &files).await?;
+        manager
+            .download_and_activate(&check.candidate, &files)
+            .await?;
         anyhow::Ok(())
     })
 }

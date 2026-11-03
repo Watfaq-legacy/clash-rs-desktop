@@ -41,14 +41,22 @@ pub const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+svc2");
 pub enum Request {
     Ping,
     /// Start (or restart) the core with this config.
-    Start { config: String },
+    Start {
+        config: String,
+    },
     /// Apply a new config to the running core without dropping the tunnel.
-    Reload { config: String },
+    Reload {
+        config: String,
+    },
     Stop,
     Status,
-    Logs { count: usize },
+    Logs {
+        count: usize,
+    },
     /// Download the latest core release into the service's own directory.
-    UpdateCore { channel: UpdateChannel },
+    UpdateCore {
+        channel: UpdateChannel,
+    },
     /// Clear the OS resolver cache (a diagnostics fix; needs privileges).
     FlushDns,
 }
@@ -83,10 +91,10 @@ pub struct ServicePaths {
 impl ServicePaths {
     #[cfg(windows)]
     pub fn system() -> Self {
-        let program_files =
-            std::env::var_os("ProgramFiles").map_or_else(|| PathBuf::from(r"C:\Program Files"), PathBuf::from);
-        let program_data =
-            std::env::var_os("ProgramData").map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from);
+        let program_files = std::env::var_os("ProgramFiles")
+            .map_or_else(|| PathBuf::from(r"C:\Program Files"), PathBuf::from);
+        let program_data = std::env::var_os("ProgramData")
+            .map_or_else(|| PathBuf::from(r"C:\ProgramData"), PathBuf::from);
         Self {
             install_dir: program_files.join("Choclite").join("Service"),
             data_dir: program_data.join("Choclite").join("Service"),
@@ -103,8 +111,10 @@ impl ServicePaths {
     }
 
     pub fn service_binary(&self) -> PathBuf {
-        self.install_dir
-            .join(format!("clash-rs-desktop-service{}", std::env::consts::EXE_SUFFIX))
+        self.install_dir.join(format!(
+            "clash-rs-desktop-service{}",
+            std::env::consts::EXE_SUFFIX
+        ))
     }
 
     pub fn core_binary(&self) -> PathBuf {
@@ -119,9 +129,7 @@ impl ServicePaths {
 
 /// Make a caller-supplied config safe to run as LocalSystem.
 pub fn sanitize_config(config: &mut Value) -> anyhow::Result<()> {
-    let map = config
-        .as_mapping_mut()
-        .context("配置格式不正确")?;
+    let map = config.as_mapping_mut().context("配置格式不正确")?;
 
     // The service decides how the core is controlled and served.
     for key in [
@@ -320,7 +328,12 @@ impl Supervisor {
 
         let ready = match wait_for_controller(Duration::from_secs(15)).await {
             // clash-rs keeps running if TUN fails; that is still a failure here.
-            Ok(version) => match self.process.log().wait_for_tun(Duration::from_secs(5)).await {
+            Ok(version) => match self
+                .process
+                .log()
+                .wait_for_tun(Duration::from_secs(5))
+                .await
+            {
                 Ok(()) => Ok(version),
                 Err(reason) => Err(anyhow::anyhow!(reason)),
             },
@@ -383,7 +396,9 @@ impl Supervisor {
         };
         // A running exe can be renamed but not overwritten; activation
         // renames the old one aside, so this is safe while running.
-        manager.download_and_activate(&check.candidate, &files).await?;
+        manager
+            .download_and_activate(&check.candidate, &files)
+            .await?;
 
         if matches!(self.process.state(), CoreState::Running { .. })
             && let Some(config) = self.last_config.clone()
@@ -435,7 +450,9 @@ fn clear_stale_routes() {
                 &["rule", "del", "table", "main", "suppress_prefixlength", "0"][..],
                 &["rule", "del", "table", "2468"][..],
             ] {
-                let args: Vec<&str> = std::iter::once(family).chain(rule.iter().copied()).collect();
+                let args: Vec<&str> = std::iter::once(family)
+                    .chain(rule.iter().copied())
+                    .collect();
                 for _ in 0..16 {
                     if !ip(&args) {
                         break;
@@ -635,7 +652,10 @@ mod transport {
             self.next.connect().await?;
             // Have the next instance ready before serving this one, so
             // concurrent clients never see "pipe not found".
-            Ok(std::mem::replace(&mut self.next, create(&self.path, false)?))
+            Ok(std::mem::replace(
+                &mut self.next,
+                create(&self.path, false)?,
+            ))
         }
     }
 
@@ -688,7 +708,9 @@ mod transport {
     use tokio::net::{UnixListener, UnixStream};
 
     pub async fn connect(path: &str) -> anyhow::Result<UnixStream> {
-        UnixStream::connect(path).await.context("增强模式服务未运行")
+        UnixStream::connect(path)
+            .await
+            .context("增强模式服务未运行")
     }
 
     pub struct Listener(UnixListener);

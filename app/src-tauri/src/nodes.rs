@@ -96,18 +96,15 @@ fn main_group(proxies: &BTreeMap<String, Value>) -> Option<String> {
 }
 
 fn kind_of(proxies: &BTreeMap<String, Value>, name: &str) -> Option<String> {
-    proxies
-        .get(name)?
-        .get("type")?
-        .as_str()
-        .map(str::to_owned)
+    proxies.get(name)?.get("type")?.as_str().map(str::to_owned)
 }
 
 /// Follow `now` through nested groups down to a real node.
 fn resolve(proxies: &BTreeMap<String, Value>, name: &str) -> String {
     let mut current = name.to_owned();
     for _ in 0..8 {
-        let is_group = kind_of(proxies, &current).is_some_and(|k| GROUP_TYPES.contains(&k.as_str()));
+        let is_group =
+            kind_of(proxies, &current).is_some_and(|k| GROUP_TYPES.contains(&k.as_str()));
         let next = proxies
             .get(&current)
             .and_then(|entry| entry.get("now"))

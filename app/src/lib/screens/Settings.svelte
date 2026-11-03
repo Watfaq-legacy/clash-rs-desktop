@@ -1,6 +1,6 @@
 <script lang="ts">
   import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-  import { api, type ConnectMode, type CoreUpdateInfo, type RoutingMode } from "$lib/api";
+  import { api, type CoreUpdateInfo, type RoutingMode } from "$lib/api";
   import Group from "$lib/components/Group.svelte";
   import Row from "$lib/components/Row.svelte";
   import Segmented from "$lib/components/Segmented.svelte";

@@ -27,7 +27,12 @@ pub fn run() -> anyhow::Result<()> {
             }
             let _ = stop_tx.send(true);
         });
-        let result = serve(SERVICE_PIPE, Supervisor::new(ServicePaths::system()), stop_rx).await;
+        let result = serve(
+            SERVICE_PIPE,
+            Supervisor::new(ServicePaths::system()),
+            stop_rx,
+        )
+        .await;
         let _ = fs::remove_file(SERVICE_PIPE);
         result
     })
@@ -109,14 +114,18 @@ fn download_core(paths: &ServicePaths) -> anyhow::Result<()> {
     use clash_rs_desktop_core::{CoreUpdateManager, CoreUpdateSettings, ManagedCoreFiles};
     tokio::runtime::Runtime::new()?.block_on(async {
         let manager = CoreUpdateManager::new();
-        let check = manager.check_latest(&CoreUpdateSettings::default(), None).await?;
+        let check = manager
+            .check_latest(&CoreUpdateSettings::default(), None)
+            .await?;
         let files = ManagedCoreFiles {
             current_binary: paths.core_binary(),
             rollback_binary: paths.install_dir.join("clash-rs.rollback"),
             wintun_dll: paths.install_dir.join("unused"),
             active_metadata: paths.install_dir.join("core.json"),
         };
-        manager.download_and_activate(&check.candidate, &files).await?;
+        manager
+            .download_and_activate(&check.candidate, &files)
+            .await?;
         anyhow::Ok(())
     })
 }

@@ -85,7 +85,10 @@ fn splice_list(base: &mut Value, key: &str, prepend: bool, items: Vec<Value>) {
     } else if key == "rules" {
         // Appending after the catch-all MATCH would never match; keep it last.
         list.iter()
-            .rposition(|rule| rule.as_str().is_some_and(|r| r.trim_start().starts_with("MATCH")))
+            .rposition(|rule| {
+                rule.as_str()
+                    .is_some_and(|r| r.trim_start().starts_with("MATCH"))
+            })
             .unwrap_or(list.len())
     } else {
         list.len()
@@ -123,10 +126,15 @@ mod tests {
 
     #[test]
     fn later_layers_override_earlier_layers() {
-        let base: Value = serde_yaml::from_str("mixed-port: 7890\nmode: rule\ntun: {enable: false, mtu: 1400}\n").unwrap();
-        let global: Value = serde_yaml::from_str("mode: global\nallow-lan: false\ntun: {enable: true}\n").unwrap();
+        let base: Value =
+            serde_yaml::from_str("mixed-port: 7890\nmode: rule\ntun: {enable: false, mtu: 1400}\n")
+                .unwrap();
+        let global: Value =
+            serde_yaml::from_str("mode: global\nallow-lan: false\ntun: {enable: true}\n").unwrap();
 
-        let merged = RuntimeConfigBuilder::new(base).push_override(global).build();
+        let merged = RuntimeConfigBuilder::new(base)
+            .push_override(global)
+            .build();
 
         assert_eq!(merged["mixed-port"], Value::from(7890));
         assert_eq!(merged["mode"], Value::from("global"));
@@ -137,16 +145,16 @@ mod tests {
 
     #[test]
     fn prepend_and_append_rules_keep_subscription_rules() {
-        let base: Value = serde_yaml::from_str(
-            "rules:\n  - DOMAIN,a.com,PROXY\n  - MATCH,PROXY\n",
-        )
-        .unwrap();
+        let base: Value =
+            serde_yaml::from_str("rules:\n  - DOMAIN,a.com,PROXY\n  - MATCH,PROXY\n").unwrap();
         let overlay: Value = serde_yaml::from_str(
             "prepend-rules:\n  - DOMAIN,first.com,DIRECT\nappend-rules:\n  - DOMAIN,last.com,DIRECT\n",
         )
         .unwrap();
 
-        let merged = RuntimeConfigBuilder::new(base).push_override(overlay).build();
+        let merged = RuntimeConfigBuilder::new(base)
+            .push_override(overlay)
+            .build();
         let rules: Vec<&str> = merged["rules"]
             .as_sequence()
             .unwrap()
@@ -175,7 +183,9 @@ mod tests {
         let overlay: Value =
             serde_yaml::from_str("prepend-proxy-groups:\n  - {name: Auto, type: smart}\n").unwrap();
 
-        let merged = RuntimeConfigBuilder::new(base).push_override(overlay).build();
+        let merged = RuntimeConfigBuilder::new(base)
+            .push_override(overlay)
+            .build();
         let groups = merged["proxy-groups"].as_sequence().unwrap();
 
         assert_eq!(groups.len(), 2);

@@ -99,7 +99,10 @@ impl LogFile {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
         Ok(Self {
             path: path.to_owned(),
@@ -154,7 +157,8 @@ impl CoreLog {
     /// Record an app-side event (connect, disconnect, errors) next to the
     /// core's own output.
     pub fn note(&self, message: &str) {
-        let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
         let stamp = now
             .format(&time::macros::format_description!(
                 "[year repr:last_two]-[month]-[day] [hour]:[minute]:[second]"
@@ -170,7 +174,11 @@ impl CoreLog {
 
     pub fn tail(&self, count: usize) -> Vec<String> {
         let lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
-        lines.iter().skip(lines.len().saturating_sub(count)).cloned().collect()
+        lines
+            .iter()
+            .skip(lines.len().saturating_sub(count))
+            .cloned()
+            .collect()
     }
 
     /// Message of the newest ERROR line among the last 30, for user display.
@@ -184,11 +192,17 @@ impl CoreLog {
     pub fn tun_status(&self) -> Option<Result<(), String>> {
         for line in self.tail(CoreLog::CAPACITY).iter().rev() {
             if line.contains("tun initialization") {
-                return Some(Err(last_error(std::slice::from_ref(line)).unwrap_or_else(|| line.clone())));
+                return Some(Err(
+                    last_error(std::slice::from_ref(line)).unwrap_or_else(|| line.clone())
+                ));
             }
-            if ["setting up routes for tun", "route setup for existing tun", "tun started with fd"]
-                .iter()
-                .any(|marker| line.contains(marker))
+            if [
+                "setting up routes for tun",
+                "route setup for existing tun",
+                "tun started with fd",
+            ]
+            .iter()
+            .any(|marker| line.contains(marker))
             {
                 return Some(Ok(()));
             }
@@ -317,7 +331,6 @@ impl ClashProcessManager {
             anyhow::bail!("clash-rs core is already running");
         }
 
-
         let mut command = Command::new(&request.binary_path);
         command.args(request.clash_args());
         if let Some(binary_dir) = request.binary_path.parent() {
@@ -376,10 +389,7 @@ impl ClashProcessManager {
 
     fn refresh_state(&mut self) {
         let Some(child) = &mut self.child else {
-            if !matches!(
-                self.state,
-                CoreState::Failed { .. }
-            ) {
+            if !matches!(self.state, CoreState::Failed { .. }) {
                 self.state = CoreState::Stopped;
             }
             return;

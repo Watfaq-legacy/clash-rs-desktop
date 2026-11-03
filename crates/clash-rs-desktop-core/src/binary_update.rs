@@ -132,8 +132,12 @@ pub struct ManagedCoreFiles {
 impl ManagedCoreFiles {
     pub fn from_paths(paths: &AppPaths) -> Self {
         Self {
-            current_binary: paths.core_dir.join(format!("clash-rs{}", std::env::consts::EXE_SUFFIX)),
-            rollback_binary: paths.core_dir.join(format!("clash-rs.rollback{}", std::env::consts::EXE_SUFFIX)),
+            current_binary: paths
+                .core_dir
+                .join(format!("clash-rs{}", std::env::consts::EXE_SUFFIX)),
+            rollback_binary: paths
+                .core_dir
+                .join(format!("clash-rs.rollback{}", std::env::consts::EXE_SUFFIX)),
             wintun_dll: paths.core_dir.join("wintun.dll"),
             active_metadata: paths.active_core_metadata_path(),
         }

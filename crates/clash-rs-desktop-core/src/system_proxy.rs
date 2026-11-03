@@ -160,7 +160,9 @@ mod platform {
     }
 
     fn check(status: WIN32_ERROR, what: &str) -> anyhow::Result<()> {
-        status.ok().with_context(|| format!("registry {what} failed"))
+        status
+            .ok()
+            .with_context(|| format!("registry {what} failed"))
     }
 
     fn get_string(key: &str, name: &str) -> anyhow::Result<Option<String>> {
@@ -326,7 +328,10 @@ mod platform {
             .args(["get", schema, key])
             .output()
             .context("没有找到 gsettings，当前桌面环境暂不支持自动设置系统代理")?;
-        anyhow::ensure!(output.status.success(), "gsettings get {schema} {key} failed");
+        anyhow::ensure!(
+            output.status.success(),
+            "gsettings get {schema} {key} failed"
+        );
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
     }
 
@@ -355,8 +360,16 @@ mod platform {
 
     pub fn apply(target: &SystemProxyTarget) -> anyhow::Result<()> {
         for scheme in ["http", "https", "socks"] {
-            set(&format!("{SCHEMA}.{scheme}"), "host", &format!("'{}'", target.host))?;
-            set(&format!("{SCHEMA}.{scheme}"), "port", &target.port.to_string())?;
+            set(
+                &format!("{SCHEMA}.{scheme}"),
+                "host",
+                &format!("'{}'", target.host),
+            )?;
+            set(
+                &format!("{SCHEMA}.{scheme}"),
+                "port",
+                &target.port.to_string(),
+            )?;
         }
         set(
             SCHEMA,
@@ -379,7 +392,15 @@ mod platform {
         if let Some(bypass) = &snapshot.bypass {
             set(SCHEMA, "ignore-hosts", bypass)?;
         }
-        set(SCHEMA, "mode", if snapshot.enabled { "'manual'" } else { "'none'" })
+        set(
+            SCHEMA,
+            "mode",
+            if snapshot.enabled {
+                "'manual'"
+            } else {
+                "'none'"
+            },
+        )
     }
 }
 

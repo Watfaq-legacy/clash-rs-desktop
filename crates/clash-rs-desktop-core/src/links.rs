@@ -38,9 +38,16 @@ pub fn config_from_links(text: &str) -> Option<Value> {
 /// Whether the text looks like share links rather than a URL or YAML.
 pub fn looks_like_links(text: &str) -> bool {
     let text = text.trim_start();
-    ["ss://", "trojan://", "vmess://", "vless://", "hysteria2://", "hy2://"]
-        .iter()
-        .any(|scheme| text.starts_with(scheme))
+    [
+        "ss://",
+        "trojan://",
+        "vmess://",
+        "vless://",
+        "hysteria2://",
+        "hy2://",
+    ]
+    .iter()
+    .any(|scheme| text.starts_with(scheme))
 }
 
 fn build_config(proxies: Vec<Value>, names: &[String]) -> Value {
@@ -203,8 +210,17 @@ fn parse_vmess(link: &str) -> Option<Mapping> {
         ("server", server.into()),
         ("port", port.into()),
         ("uuid", field("id")?.into()),
-        ("alterId", field("aid").and_then(|a| a.parse::<u32>().ok()).unwrap_or(0).into()),
-        ("cipher", field("scy").unwrap_or_else(|| "auto".into()).into()),
+        (
+            "alterId",
+            field("aid")
+                .and_then(|a| a.parse::<u32>().ok())
+                .unwrap_or(0)
+                .into(),
+        ),
+        (
+            "cipher",
+            field("scy").unwrap_or_else(|| "auto".into()).into(),
+        ),
         ("udp", true.into()),
     ]);
     if field("tls").as_deref() == Some("tls") {
@@ -246,7 +262,13 @@ fn parse_hysteria2(link: &str) -> Option<Mapping> {
 
 fn add_transport(proxy: &mut Mapping, query: &Query<'_>) {
     let net = query.get("type").unwrap_or_else(|| "tcp".into());
-    insert_transport(proxy, &net, query.get("path"), query.get("host"), query.get("serviceName"));
+    insert_transport(
+        proxy,
+        &net,
+        query.get("path"),
+        query.get("host"),
+        query.get("serviceName"),
+    );
 }
 
 fn insert_transport(
@@ -270,7 +292,11 @@ fn insert_transport(
             proxy.insert("network".into(), "grpc".into());
             proxy.insert(
                 "grpc-opts".into(),
-                mapping([("grpc-service-name", service.or(path).unwrap_or_default().into())]).into(),
+                mapping([(
+                    "grpc-service-name",
+                    service.or(path).unwrap_or_default().into(),
+                )])
+                .into(),
             );
         }
         "h2" | "http" => {
@@ -298,7 +324,8 @@ impl Query<'_> {
     }
 
     fn truthy(&self, key: &str) -> bool {
-        self.get(key).is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        self.get(key)
+            .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
     }
 }
 
@@ -311,7 +338,10 @@ fn fragment_or_host(url: &reqwest::Url) -> String {
 
 fn split_fragment(text: &str) -> (&str, Option<String>) {
     match text.split_once('#') {
-        Some((rest, fragment)) => (rest, Some(percent_decode(fragment)).filter(|f| !f.is_empty())),
+        Some((rest, fragment)) => (
+            rest,
+            Some(percent_decode(fragment)).filter(|f| !f.is_empty()),
+        ),
         None => (text, None),
     }
 }
@@ -335,7 +365,10 @@ fn unique_name(taken: &[String], name: String) -> String {
     if !taken.contains(&name) {
         return name;
     }
-    (2..).map(|n| format!("{name} {n}")).find(|n| !taken.contains(n)).unwrap()
+    (2..)
+        .map(|n| format!("{name} {n}"))
+        .find(|n| !taken.contains(n))
+        .unwrap()
 }
 
 fn decode_base64(text: &str) -> Option<String> {
@@ -379,7 +412,8 @@ mod tests {
 
     #[test]
     fn parses_common_share_links() {
-        let ss_userinfo = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("aes-256-gcm:pa ss");
+        let ss_userinfo =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("aes-256-gcm:pa ss");
         let vmess = base64::engine::general_purpose::STANDARD.encode(
             r#"{"v":"2","ps":"VM 香港","add":"v.example.com","port":"443","id":"uuid-1","aid":0,"net":"ws","path":"/ray","host":"cdn.example.com","tls":"tls"}"#,
         );
@@ -401,14 +435,20 @@ mod tests {
         assert_eq!(list[0]["password"], Value::from("pa ss"));
         assert_eq!(list[1]["ws-opts"]["path"], Value::from("/ws"));
         assert_eq!(list[2]["type"], Value::from("vmess"));
-        assert_eq!(list[2]["ws-opts"]["headers"]["Host"], Value::from("cdn.example.com"));
+        assert_eq!(
+            list[2]["ws-opts"]["headers"]["Host"],
+            Value::from("cdn.example.com")
+        );
         assert_eq!(list[3]["reality-opts"]["public-key"], Value::from("KEY"));
         assert_eq!(list[3]["flow"], Value::from("xtls-rprx-vision"));
         assert_eq!(list[4]["type"], Value::from("hysteria2"));
 
         let groups = config["proxy-groups"].as_sequence().unwrap();
         assert_eq!(groups[0]["name"], Value::from(MAIN_GROUP));
-        assert_eq!(config["rules"].as_sequence().unwrap().last().unwrap(), &Value::from("MATCH,节点选择"));
+        assert_eq!(
+            config["rules"].as_sequence().unwrap().last().unwrap(),
+            &Value::from("MATCH,节点选择")
+        );
     }
 
     #[test]
@@ -416,7 +456,10 @@ mod tests {
         let body = "trojan://a@x.example.com:443#Same\ntrojan://b@y.example.com:443#Same\n";
         let encoded = base64::engine::general_purpose::STANDARD.encode(body);
         let config = config_from_links(&encoded).unwrap();
-        let names: Vec<&str> = proxies(&config).iter().map(|p| p["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = proxies(&config)
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, ["Same", "Same 2"]);
     }
 

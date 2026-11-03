@@ -64,7 +64,10 @@ impl CustomRule {
             {
                 value = host.to_owned();
             }
-            value = value.trim_start_matches("*.").trim_matches('.').to_ascii_lowercase();
+            value = value
+                .trim_start_matches("*.")
+                .trim_matches('.')
+                .to_ascii_lowercase();
         }
         anyhow::ensure!(!value.is_empty(), "请输入内容");
         anyhow::ensure!(
@@ -79,10 +82,18 @@ impl CustomRule {
                 "IP 段格式应类似 10.0.0.0/8"
             );
             if prefix.is_empty() {
-                value = if ip.contains(':') { format!("{ip}/128") } else { format!("{ip}/32") };
+                value = if ip.contains(':') {
+                    format!("{ip}/128")
+                } else {
+                    format!("{ip}/32")
+                };
             }
         }
-        Ok(Self { kind, value, action })
+        Ok(Self {
+            kind,
+            value,
+            action,
+        })
     }
 
     fn to_clash(&self, proxy_target: &str) -> String {
@@ -125,7 +136,11 @@ pub fn generate(inputs: ConfigInputs<'_>) -> Value {
     merge_subscriptions(&mut subscription, inputs.extra_subscriptions);
     let proxy_target = main_select_group(&subscription).unwrap_or_else(|| "GLOBAL".to_owned());
 
-    let defaults = if inputs.tun { tun_defaults() } else { Value::Mapping(Mapping::new()) };
+    let defaults = if inputs.tun {
+        tun_defaults()
+    } else {
+        Value::Mapping(Mapping::new())
+    };
     let mut builder = RuntimeConfigBuilder::new(defaults).push_override(subscription);
     for layer in inputs.overrides {
         if layer.is_mapping() {
@@ -166,7 +181,9 @@ pub fn generate(inputs: ConfigInputs<'_>) -> Value {
             tun.as_mapping_mut()
                 .expect("mapping")
                 .insert("gateway-v6".into(), "fdfe:dcba:9876::1/126".into());
-            dns.as_mapping_mut().expect("mapping").insert("ipv6".into(), true.into());
+            dns.as_mapping_mut()
+                .expect("mapping")
+                .insert("ipv6".into(), true.into());
             shell_map.insert("ipv6".into(), true.into());
         }
         shell_map.insert("tun".into(), tun);
@@ -176,7 +193,11 @@ pub fn generate(inputs: ConfigInputs<'_>) -> Value {
         shell_map.insert("tun".into(), mapping([("enable", false.into())]));
     }
     if let Some(ipc) = inputs.controller_ipc {
-        let key = if cfg!(windows) { "external-controller-pipe" } else { "external-controller-unix" };
+        let key = if cfg!(windows) {
+            "external-controller-pipe"
+        } else {
+            "external-controller-unix"
+        };
         shell_map.insert(key.into(), ipc.into());
     }
     if let Some((addr, secret)) = inputs.controller_http {
@@ -253,7 +274,9 @@ impl Bypass {
             if let Value::Mapping(policy) = policy {
                 for pattern in patterns {
                     // A subscription's own policy for the same domain wins.
-                    policy.entry(pattern.into()).or_insert_with(|| server.clone().into());
+                    policy
+                        .entry(pattern.into())
+                        .or_insert_with(|| server.clone().into());
                 }
             }
         }
@@ -269,7 +292,9 @@ impl Bypass {
         for cidr in &self.cidrs {
             // WinINet only understands octet wildcards; the core still
             // routes other ranges DIRECT by rule.
-            let Some((ip, prefix)) = cidr.split_once('/') else { continue };
+            let Some((ip, prefix)) = cidr.split_once('/') else {
+                continue;
+            };
             let octets: Vec<&str> = ip.split('.').collect();
             let keep = match prefix.parse::<u8>() {
                 Ok(32) => 4,
@@ -307,15 +332,25 @@ pub fn parse_bypass_entry(entry: &str) -> Option<BypassEntry> {
     let (ip, prefix) = text.split_once('/').unwrap_or((&text, ""));
     if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
         let max = if addr.is_ipv4() { 32 } else { 128 };
-        let prefix = if prefix.is_empty() { max } else { prefix.parse::<u8>().ok().filter(|p| *p <= max)? };
+        let prefix = if prefix.is_empty() {
+            max
+        } else {
+            prefix.parse::<u8>().ok().filter(|p| *p <= max)?
+        };
         return Some(BypassEntry::Cidr(format!("{addr}/{prefix}")));
     }
-    let domain = text.trim_start_matches("*.").trim_start_matches("+.").trim_matches('.').to_ascii_lowercase();
-    let valid = !domain.is_empty()
-        && domain.contains('.')
-        || matches!(domain.as_str(), "localhost");
-    (valid && domain.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')))
-        .then_some(BypassEntry::Domain(domain))
+    let domain = text
+        .trim_start_matches("*.")
+        .trim_start_matches("+.")
+        .trim_matches('.')
+        .to_ascii_lowercase();
+    let valid =
+        !domain.is_empty() && domain.contains('.') || matches!(domain.as_str(), "localhost");
+    (valid
+        && domain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')))
+    .then_some(BypassEntry::Domain(domain))
 }
 
 /// Merge other subscriptions' nodes into `base`, keeping `base`'s rules and
@@ -332,8 +367,13 @@ fn merge_subscriptions(base: &mut Value, extras: Vec<(String, Value)>) {
         if let Some(Value::Sequence(proxies)) = extra.get("proxies") {
             for proxy in proxies {
                 let mut proxy = proxy.clone();
-                let Some(map) = proxy.as_mapping_mut() else { continue };
-                let renamed = format!("{prefix}{}", map.get("name").and_then(Value::as_str).unwrap_or("node"));
+                let Some(map) = proxy.as_mapping_mut() else {
+                    continue;
+                };
+                let renamed = format!(
+                    "{prefix}{}",
+                    map.get("name").and_then(Value::as_str).unwrap_or("node")
+                );
                 map.insert("name".into(), renamed.clone().into());
                 members.push(renamed.into());
                 push_to_list(base, "proxies", proxy);
@@ -354,12 +394,21 @@ fn merge_subscriptions(base: &mut Value, extras: Vec<(String, Value)>) {
 
         if let Some(Value::Sequence(groups)) = base.get_mut("proxy-groups") {
             for group in groups.iter_mut() {
-                let kind = group.get("type").and_then(Value::as_str).unwrap_or_default().to_owned();
-                let Some(map) = group.as_mapping_mut() else { continue };
+                let kind = group
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                let Some(map) = group.as_mapping_mut() else {
+                    continue;
+                };
                 let is_main = main.as_deref() == map.get("name").and_then(Value::as_str);
                 if is_main {
                     append(map, "proxies", vec![group_name.clone().into()]);
-                } else if matches!(kind.as_str(), "url-test" | "fallback" | "load-balance" | "smart") {
+                } else if matches!(
+                    kind.as_str(),
+                    "url-test" | "fallback" | "load-balance" | "smart"
+                ) {
                     append(map, "proxies", members.clone());
                     if !uses.is_empty() {
                         append(map, "use", uses.clone());
@@ -383,7 +432,9 @@ fn merge_subscriptions(base: &mut Value, extras: Vec<(String, Value)>) {
 
 fn base_mapping<'a>(base: &'a mut Value, key: &str) -> &'a mut Mapping {
     let map = base.as_mapping_mut().expect("config is a mapping");
-    let entry = map.entry(key.into()).or_insert_with(|| Value::Mapping(Mapping::new()));
+    let entry = map
+        .entry(key.into())
+        .or_insert_with(|| Value::Mapping(Mapping::new()));
     if !entry.is_mapping() {
         *entry = Value::Mapping(Mapping::new());
     }
@@ -391,15 +442,21 @@ fn base_mapping<'a>(base: &'a mut Value, key: &str) -> &'a mut Mapping {
 }
 
 fn push_to_list(base: &mut Value, key: &str, item: Value) {
-    let Some(map) = base.as_mapping_mut() else { return };
-    let entry = map.entry(key.into()).or_insert_with(|| Value::Sequence(Vec::new()));
+    let Some(map) = base.as_mapping_mut() else {
+        return;
+    };
+    let entry = map
+        .entry(key.into())
+        .or_insert_with(|| Value::Sequence(Vec::new()));
     if let Value::Sequence(list) = entry {
         list.push(item);
     }
 }
 
 fn append(map: &mut Mapping, key: &str, items: Vec<Value>) {
-    let entry = map.entry(key.into()).or_insert_with(|| Value::Sequence(Vec::new()));
+    let entry = map
+        .entry(key.into())
+        .or_insert_with(|| Value::Sequence(Vec::new()));
     if let Value::Sequence(list) = entry {
         list.extend(items);
     }
@@ -427,8 +484,17 @@ fn tun_defaults() -> Value {
             ("enable", true.into()),
             ("ipv6", false.into()),
             ("enhanced-mode", "fake-ip".into()),
-            ("default-nameserver", servers(&["223.5.5.5", "119.29.29.29"])),
-            ("nameserver", servers(&["https://doh.pub/dns-query", "https://dns.alidns.com/dns-query"])),
+            (
+                "default-nameserver",
+                servers(&["223.5.5.5", "119.29.29.29"]),
+            ),
+            (
+                "nameserver",
+                servers(&[
+                    "https://doh.pub/dns-query",
+                    "https://dns.alidns.com/dns-query",
+                ]),
+            ),
         ]),
     )])
 }
@@ -480,8 +546,12 @@ mod tests {
     #[test]
     fn custom_rules_target_main_select_group_and_come_first() {
         let rules = [
-            CustomRule::validated(RuleKind::DomainSuffix, "https://www.Example.com/a", RuleAction::Proxy)
-                .unwrap(),
+            CustomRule::validated(
+                RuleKind::DomainSuffix,
+                "https://www.Example.com/a",
+                RuleAction::Proxy,
+            )
+            .unwrap(),
             CustomRule::validated(RuleKind::IpCidr, "10.0.0.1", RuleAction::Direct).unwrap(),
         ];
         let config = generate(inputs(&rules, false));
@@ -512,7 +582,10 @@ mod tests {
             tun_ipv6: true,
             ..inputs(&[], true)
         });
-        assert_eq!(on["tun"]["gateway-v6"], Value::from("fdfe:dcba:9876::1/126"));
+        assert_eq!(
+            on["tun"]["gateway-v6"],
+            Value::from("fdfe:dcba:9876::1/126")
+        );
         assert_eq!(on["dns"]["ipv6"], Value::from(true));
         assert_eq!(on["ipv6"], Value::from(true));
     }
@@ -523,13 +596,23 @@ mod tests {
             search_suffixes: vec!["corp.example.com".into()],
             dns_servers: vec!["192.0.2.53".into()],
         };
-        let bypass = ["*.nas.example.net".to_owned(), "https://nas.example.org/".to_owned(), "8.8.8.0/24".to_owned(), "nonsense".to_owned()];
+        let bypass = [
+            "*.nas.example.net".to_owned(),
+            "https://nas.example.org/".to_owned(),
+            "8.8.8.0/24".to_owned(),
+            "nonsense".to_owned(),
+        ];
         let config = generate(ConfigInputs {
             bypass: &bypass,
             local: &local,
             ..inputs(&[], true)
         });
-        let rules: Vec<&str> = config["rules"].as_sequence().unwrap().iter().map(|r| r.as_str().unwrap()).collect();
+        let rules: Vec<&str> = config["rules"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
         for expected in [
             "DOMAIN-SUFFIX,nas.example.net,DIRECT",
             "DOMAIN-SUFFIX,nas.example.org,DIRECT",
@@ -541,9 +624,17 @@ mod tests {
         assert!(!rules.iter().any(|r| r.contains("nonsense")));
 
         let dns = &config["dns"];
-        assert_eq!(dns["nameserver-policy"]["+.nas.example.net"], Value::from("192.0.2.53"));
+        assert_eq!(
+            dns["nameserver-policy"]["+.nas.example.net"],
+            Value::from("192.0.2.53")
+        );
         assert_eq!(dns["nameserver-policy"]["+.lan"], Value::from("192.0.2.53"));
-        let filter: Vec<&str> = dns["fake-ip-filter"].as_sequence().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let filter: Vec<&str> = dns["fake-ip-filter"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert!(filter.contains(&"+.nas.example.net"));
     }
 
@@ -573,12 +664,20 @@ mod tests {
             ..inputs(&[], false)
         });
 
-        let names: Vec<&str> = config["proxies"].as_sequence().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = config["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, ["HK", "[B] JP"]);
         assert!(config["proxy-providers"].get("[B] sub").is_some());
 
         let groups = config["proxy-groups"].as_sequence().unwrap();
-        assert_eq!(groups[0]["proxies"].as_sequence().unwrap().last().unwrap(), &Value::from("[B]"));
+        assert_eq!(
+            groups[0]["proxies"].as_sequence().unwrap().last().unwrap(),
+            &Value::from("[B]")
+        );
         assert_eq!(groups[1]["proxies"][1], Value::from("[B] JP"));
         assert_eq!(groups[1]["use"][0], Value::from("[B] sub"));
         assert_eq!(groups[2]["name"], Value::from("[B]"));
@@ -597,7 +696,10 @@ mod tests {
 
     #[test]
     fn rejects_values_that_would_break_a_rule() {
-        assert!(CustomRule::validated(RuleKind::DomainSuffix, "a.com,REJECT", RuleAction::Proxy).is_err());
+        assert!(
+            CustomRule::validated(RuleKind::DomainSuffix, "a.com,REJECT", RuleAction::Proxy)
+                .is_err()
+        );
         assert!(CustomRule::validated(RuleKind::IpCidr, "not-an-ip", RuleAction::Direct).is_err());
         assert!(CustomRule::validated(RuleKind::DomainSuffix, "  ", RuleAction::Direct).is_err());
     }

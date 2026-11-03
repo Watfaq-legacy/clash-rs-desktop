@@ -33,15 +33,25 @@ async fn main() -> anyhow::Result<()> {
 
     engine.connect(&|step| println!("step: {step}")).await?;
     let controller = engine.controller().expect("connected");
-    println!("connected: core {}", controller.get_version().await?.version);
-    println!("mode: {:?}, port: {:?}", engine.connected_mode(), engine.mixed_port());
+    println!(
+        "connected: core {}",
+        controller.get_version().await?.version
+    );
+    println!(
+        "mode: {:?}, port: {:?}",
+        engine.connected_mode(),
+        engine.mixed_port()
+    );
     println!("proxies: {}", controller.get_proxies().await?.proxies.len());
 
     engine.reload().await?;
     println!("hot reload: ok");
 
     // Optional: stay connected so the caller can inspect the system.
-    if let Some(secs) = std::env::var("SMOKE_HOLD_SECS").ok().and_then(|s| s.parse().ok()) {
+    if let Some(secs) = std::env::var("SMOKE_HOLD_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+    {
         tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
     }
     if std::env::var_os("SMOKE_LOGS").is_some() {

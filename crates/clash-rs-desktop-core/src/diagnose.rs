@@ -42,7 +42,12 @@ pub struct Finding {
 }
 
 impl Finding {
-    fn new(id: &'static str, level: Level, title: impl Into<String>, detail: impl Into<String>) -> Self {
+    fn new(
+        id: &'static str,
+        level: Level,
+        title: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
         Self {
             id,
             level,
@@ -111,15 +116,25 @@ pub fn assess(ctx: &Context, sys: &SystemState) -> Vec<Finding> {
     if ctx.connected_tun.is_some() {
         assess_reachability(ctx, &mut out);
     }
-    out.sort_by(|a, b| b.level.cmp(&a.level));
+    out.sort_by_key(|f| std::cmp::Reverse(f.level));
     if out.iter().all(|f| f.level <= Level::Info) {
-        out.insert(0, Finding::new("all-good", Level::Ok, "没有发现问题", "网络和代理工作正常。"));
+        out.insert(
+            0,
+            Finding::new(
+                "all-good",
+                Level::Ok,
+                "没有发现问题",
+                "网络和代理工作正常。",
+            ),
+        );
     }
     out
 }
 
 fn ours(proxy_server: Option<&str>, port: Option<u16>) -> bool {
-    let Some(server) = proxy_server else { return false };
+    let Some(server) = proxy_server else {
+        return false;
+    };
     let local = server.contains("127.0.0.1") || server.contains("localhost");
     local && port.is_none_or(|p| server.contains(&format!(":{p}")))
 }
@@ -135,7 +150,10 @@ fn assess_disconnected(_ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>
     }
     // A local proxy left switched on with nothing listening breaks every app.
     if sys.proxy_enabled
-        && sys.proxy_server.as_deref().is_some_and(|s| s.contains("127.0.0.1") || s.contains("localhost"))
+        && sys
+            .proxy_server
+            .as_deref()
+            .is_some_and(|s| s.contains("127.0.0.1") || s.contains("localhost"))
         && !sys.port_listening
     {
         out.push(
@@ -197,7 +215,10 @@ fn assess_system_proxy(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>)
             "other-vpn",
             Level::Info,
             "检测到其他 VPN",
-            format!("{} 正在运行。如果网络不稳定，可以先关闭它们再试。", sys.other_vpns.join("、")),
+            format!(
+                "{} 正在运行。如果网络不稳定，可以先关闭它们再试。",
+                sys.other_vpns.join("、")
+            ),
         ));
     }
 }
@@ -307,7 +328,10 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
             "other-vpn",
             Level::Warn,
             "检测到其他 VPN 或虚拟网卡",
-            format!("{} 正在运行，可能与增强模式争抢路由。如果遇到断网，先关闭它们。", sys.other_vpns.join("、")),
+            format!(
+                "{} 正在运行，可能与增强模式争抢路由。如果遇到断网，先关闭它们。",
+                sys.other_vpns.join("、")
+            ),
         ));
     }
 }
@@ -355,7 +379,11 @@ fn is_fake_ip(ip: IpAddr) -> bool {
 /// Gather OS facts. With `routes`, also adapters/routes/DNS (a few seconds
 /// on Windows); without, only the cheap proxy/port/reachability checks.
 pub fn collect(mixed_port: Option<u16>, routes: bool) -> SystemState {
-    let mut sys = if routes { platform::collect() } else { SystemState::default() };
+    let mut sys = if routes {
+        platform::collect()
+    } else {
+        SystemState::default()
+    };
     let proxy = crate::PlatformSystemProxy;
     if let Ok(snapshot) = crate::SystemProxyBackend::snapshot(&proxy) {
         sys.proxy_enabled = snapshot.enabled;
@@ -368,12 +396,19 @@ pub fn collect(mixed_port: Option<u16>, routes: bool) -> SystemState {
             .and_then(|p| p.parse().ok())
     });
     sys.port_listening = port.is_some_and(|p| {
-        std::net::TcpStream::connect_timeout(&([127, 0, 0, 1], p).into(), std::time::Duration::from_millis(500)).is_ok()
+        std::net::TcpStream::connect_timeout(
+            &([127, 0, 0, 1], p).into(),
+            std::time::Duration::from_millis(500),
+        )
+        .is_ok()
     });
     let reachable = |addrs: &[&str]| {
         addrs.iter().any(|addr| {
-            std::net::TcpStream::connect_timeout(&addr.parse().unwrap(), std::time::Duration::from_millis(1500))
-                .is_ok()
+            std::net::TcpStream::connect_timeout(
+                &addr.parse().unwrap(),
+                std::time::Duration::from_millis(1500),
+            )
+            .is_ok()
         })
     };
     sys.internet_reachable = reachable(&["223.5.5.5:53", "1.1.1.1:53", "8.8.8.8:53"]);
@@ -446,7 +481,8 @@ mod platform {
     }
 
     fn adapters() -> Vec<Adapter> {
-        let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_INCLUDE_ALL_INTERFACES;
+        let flags =
+            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_INCLUDE_ALL_INTERFACES;
         let mut size = 16 * 1024u32;
         let mut buf: Vec<u64>;
         // SAFETY: a u64-aligned buffer of `size` bytes, grown on overflow;
@@ -558,17 +594,29 @@ mod platform {
             let index = index?;
             adapters
                 .iter()
-                .find(|a| if v6 { a.index6 == index } else { a.index == index })
+                .find(|a| {
+                    if v6 {
+                        a.index6 == index
+                    } else {
+                        a.index == index
+                    }
+                })
                 .map(|a| a.name.clone())
         };
 
         let mut sys = SystemState {
             route4: name_of(best_interface("1.1.1.1".parse().unwrap()), false),
-            route6: name_of(best_interface("2606:4700:4700::1111".parse().unwrap()), true),
+            route6: name_of(
+                best_interface("2606:4700:4700::1111".parse().unwrap()),
+                true,
+            ),
             has_global_ipv6: adapters.iter().any(|a| a.up && a.global_ipv6),
             ..Default::default()
         };
-        if let Some(tun) = adapters.iter().find(|a| a.name.to_ascii_lowercase().starts_with("utun")) {
+        if let Some(tun) = adapters
+            .iter()
+            .find(|a| a.name.to_ascii_lowercase().starts_with("utun"))
+        {
             sys.tun_name = Some(tun.name.clone());
             sys.tun_up = tun.up;
             sys.tun_ips = tun.ipv4.clone();
@@ -626,12 +674,21 @@ mod platform {
             if name.starts_with("utun") {
                 sys.tun_name = Some((*name).to_owned());
                 sys.tun_up = fields.get(1).is_some_and(|s| *s != "DOWN");
-                sys.tun_ips = fields[2..].iter().filter(|a| a.contains('.')).map(|a| (*a).to_owned()).collect();
-            } else if ["wg", "tailscale", "zt", "tun", "tap", "nordlynx", "proton"].iter().any(|p| name.starts_with(p)) {
+                sys.tun_ips = fields[2..]
+                    .iter()
+                    .filter(|a| a.contains('.'))
+                    .map(|a| (*a).to_owned())
+                    .collect();
+            } else if ["wg", "tailscale", "zt", "tun", "tap", "nordlynx", "proton"]
+                .iter()
+                .any(|p| name.starts_with(p))
+            {
                 sys.other_vpns.push((*name).to_owned());
             }
         }
-        sys.has_global_ipv6 = !run("ip", &["-6", "addr", "show", "scope", "global"]).trim().is_empty();
+        sys.has_global_ipv6 = !run("ip", &["-6", "addr", "show", "scope", "global"])
+            .trim()
+            .is_empty();
         sys.resolved = run("getent", &["ahostsv4", "www.example.com"])
             .split_whitespace()
             .next()
@@ -713,7 +770,10 @@ mod tests {
             ..sys
         };
         assert!(!ids(&assess(&ctx, &dead_v6)).contains(&"ipv6-bypass"));
-        assert_eq!(findings.iter().find(|f| f.id == "route-loop").unwrap().fix, Some(Fix::Reconnect));
+        assert_eq!(
+            findings.iter().find(|f| f.id == "route-loop").unwrap().fix,
+            Some(Fix::Reconnect)
+        );
     }
 
     #[test]

@@ -134,7 +134,14 @@ mod platform {
         // SAFETY: first call only reports the needed size; second call
         // fills a buffer of at least that size.
         unsafe {
-            let _ = GetExtendedTcpTable(None, &mut size, false, family, TCP_TABLE_OWNER_PID_CONNECTIONS, 0);
+            let _ = GetExtendedTcpTable(
+                None,
+                &mut size,
+                false,
+                family,
+                TCP_TABLE_OWNER_PID_CONNECTIONS,
+                0,
+            );
             for _ in 0..3 {
                 let mut buf = vec![0u32; (size as usize).div_ceil(4) + 16];
                 let mut len = (buf.len() * 4) as u32;
@@ -165,14 +172,16 @@ mod platform {
                 let table = &*(buf.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
                 std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize)
             };
-            out.extend(rows.iter().filter(|r: &&MIB_TCPROW_OWNER_PID| r.dwState == established).map(|r| {
-                Connection {
-                    pid: r.dwOwningPid,
-                    remote: IpAddr::V4(Ipv4Addr::from(r.dwRemoteAddr.to_ne_bytes())),
-                    remote_port: u16::from_be(r.dwRemotePort as u16),
-                    local_port: u16::from_be(r.dwLocalPort as u16),
-                }
-            }));
+            out.extend(
+                rows.iter()
+                    .filter(|r: &&MIB_TCPROW_OWNER_PID| r.dwState == established)
+                    .map(|r| Connection {
+                        pid: r.dwOwningPid,
+                        remote: IpAddr::V4(Ipv4Addr::from(r.dwRemoteAddr.to_ne_bytes())),
+                        remote_port: u16::from_be(r.dwRemotePort as u16),
+                        local_port: u16::from_be(r.dwLocalPort as u16),
+                    }),
+            );
         }
         if let Some(buf) = table(AF_INET6.0 as u32) {
             // SAFETY: as above, for the IPv6 table.
@@ -180,14 +189,16 @@ mod platform {
                 let table = &*(buf.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
                 std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize)
             };
-            out.extend(rows.iter().filter(|r: &&MIB_TCP6ROW_OWNER_PID| r.dwState == established).map(|r| {
-                Connection {
-                    pid: r.dwOwningPid,
-                    remote: IpAddr::V6(Ipv6Addr::from(r.ucRemoteAddr)),
-                    remote_port: u16::from_be(r.dwRemotePort as u16),
-                    local_port: u16::from_be(r.dwLocalPort as u16),
-                }
-            }));
+            out.extend(
+                rows.iter()
+                    .filter(|r: &&MIB_TCP6ROW_OWNER_PID| r.dwState == established)
+                    .map(|r| Connection {
+                        pid: r.dwOwningPid,
+                        remote: IpAddr::V6(Ipv6Addr::from(r.ucRemoteAddr)),
+                        remote_port: u16::from_be(r.dwRemotePort as u16),
+                        local_port: u16::from_be(r.dwLocalPort as u16),
+                    }),
+            );
         }
         out
     }
@@ -230,7 +241,8 @@ mod platform {
             };
 
             let key = HSTRING::from(format!(r"\StringFileInfo\{lang}\FileDescription"));
-            if !VerQueryValueW(data.as_ptr().cast(), &key, &mut ptr, &mut len).as_bool() || len == 0 {
+            if !VerQueryValueW(data.as_ptr().cast(), &key, &mut ptr, &mut len).as_bool() || len == 0
+            {
                 return None;
             }
             let text = std::slice::from_raw_parts(ptr as *const u16, len as usize);
@@ -284,7 +296,10 @@ mod tests {
 
     #[test]
     fn cleans_odd_executable_names() {
-        assert_eq!(clean_file_name(r"C:\x\app.EXE.1793497039260520000.old"), "app");
+        assert_eq!(
+            clean_file_name(r"C:\x\app.EXE.1793497039260520000.old"),
+            "app"
+        );
         assert_eq!(clean_file_name(r"C:\Games\Steam.exe"), "Steam");
         assert_eq!(clean_file_name("/usr/bin/curl"), "curl");
     }

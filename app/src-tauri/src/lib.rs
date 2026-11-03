@@ -70,8 +70,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 // A TUN core the service kept alive counts as connected.
                 commands::adopt_existing(&handle).await;
-                let connected =
-                    handle.state::<AppState>().view().phase == state::Phase::Connected;
+                let connected = handle.state::<AppState>().view().phase == state::Phase::Connected;
                 if auto_connect && has_profile && !connected {
                     let _ = commands::connect_flow(&handle).await;
                 }
@@ -179,8 +178,8 @@ fn restore_network(app: &AppHandle) {
         if let Ok(mut engine) =
             tokio::time::timeout(std::time::Duration::from_secs(3), state.engine.lock()).await
         {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), engine.disconnect())
-                .await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(5), engine.disconnect()).await;
         }
     });
 }

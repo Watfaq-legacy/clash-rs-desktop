@@ -37,7 +37,12 @@ pub fn run_console() -> anyhow::Result<()> {
             let _ = tokio::signal::ctrl_c().await;
             let _ = stop_tx.send(true);
         });
-        serve(SERVICE_PIPE, Supervisor::new(ServicePaths::system()), stop_rx).await
+        serve(
+            SERVICE_PIPE,
+            Supervisor::new(ServicePaths::system()),
+            stop_rx,
+        )
+        .await
     })
 }
 
@@ -95,8 +100,10 @@ pub fn install(binary: &Path) -> anyhow::Result<()> {
 
 pub fn start() -> anyhow::Result<()> {
     let manager = manager(ServiceManagerAccess::CONNECT)?;
-    let service =
-        manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::START)?;
+    let service = manager.open_service(
+        SERVICE_NAME,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::START,
+    )?;
     if service.query_status()?.current_state != ServiceState::Running {
         service.start(&[] as &[OsString])?;
         wait_for(&service, ServiceState::Running)?;
@@ -106,9 +113,10 @@ pub fn start() -> anyhow::Result<()> {
 
 pub fn stop_if_installed() -> anyhow::Result<()> {
     let manager = manager(ServiceManagerAccess::CONNECT)?;
-    let service = match manager
-        .open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS | ServiceAccess::STOP)
-    {
+    let service = match manager.open_service(
+        SERVICE_NAME,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::STOP,
+    ) {
         Ok(service) => service,
         Err(error) if winapi_code(&error) == Some(ERROR_SERVICE_DOES_NOT_EXIST) => return Ok(()),
         Err(error) => return Err(error.into()),
@@ -130,7 +138,10 @@ pub fn uninstall() -> anyhow::Result<()> {
     }
 }
 
-fn wait_for(service: &windows_service::service::Service, state: ServiceState) -> anyhow::Result<()> {
+fn wait_for(
+    service: &windows_service::service::Service,
+    state: ServiceState,
+) -> anyhow::Result<()> {
     for _ in 0..80 {
         if service.query_status()?.current_state == state {
             return Ok(());

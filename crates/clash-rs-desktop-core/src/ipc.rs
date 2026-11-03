@@ -432,8 +432,8 @@ mod platform {
     {
         if let Some(base_url) = remote_http_base(config) {
             let client = reqwest::Client::new();
-            let method = reqwest::Method::from_bytes(method.as_bytes())
-                .context("invalid HTTP method")?;
+            let method =
+                reqwest::Method::from_bytes(method.as_bytes()).context("invalid HTTP method")?;
             let mut request = client.request(method, join_http_url(&base_url, path));
             if let Some(secret) = &config.auth_secret {
                 request = request.bearer_auth(secret);
@@ -563,7 +563,8 @@ mod platform {
             tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
         >,
     > {
-        let mut request = format!("{}{path}", base_url.trim_end_matches('/')).into_client_request()?;
+        let mut request =
+            format!("{}{path}", base_url.trim_end_matches('/')).into_client_request()?;
         if let Some(secret) = &config.auth_secret {
             request
                 .headers_mut()
@@ -578,11 +579,7 @@ mod platform {
     async fn open_pipe_websocket(
         path: &str,
         config: &ClashIpcClientConfig,
-    ) -> anyhow::Result<
-        tokio_tungstenite::WebSocketStream<
-            IpcStream,
-        >,
-    > {
+    ) -> anyhow::Result<tokio_tungstenite::WebSocketStream<IpcStream>> {
         let client = open_ipc(&config.pipe_path).await?;
 
         let mut request = format!("ws://localhost{path}").into_client_request()?;
@@ -641,7 +638,6 @@ mod platform {
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
     {
-
         let deadline = tokio::time::Instant::now() + timeout;
         let mut messages = Vec::new();
         while messages.len() < max_messages {
@@ -689,6 +685,25 @@ mod platform {
     }
 }
 
+impl ControllerEndpoint {
+    pub fn path(self) -> &'static str {
+        match self {
+            Self::Version => "/version",
+            Self::Configs => "/configs",
+            Self::Proxies => "/proxies",
+            Self::ProxyProviders => "/providers/proxies",
+            Self::RuleProviders => "/providers/rules",
+            Self::Rules => "/rules",
+            Self::Connections => "/connections",
+            Self::Logs => "/ws/logs",
+            Self::Traffic => "/ws/traffic",
+            Self::Flows => "/ws/flows",
+            Self::DnsQuery => "/dns/query",
+            Self::Memory => "/memory",
+            Self::Restart => "/restart",
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -719,10 +734,9 @@ mod tests {
         // The Clash controller emits camelCase `uploadTotal`/`downloadTotal`.
         // Without the serde rename these silently deserialize to None and the
         // UI's cumulative traffic counters stay blank.
-        let response: super::ConnectionsResponse = serde_json::from_str(
-            r#"{"connections":[],"uploadTotal":4096,"downloadTotal":1024}"#,
-        )
-        .unwrap();
+        let response: super::ConnectionsResponse =
+            serde_json::from_str(r#"{"connections":[],"uploadTotal":4096,"downloadTotal":1024}"#)
+                .unwrap();
 
         assert_eq!(response.upload_total, Some(4096));
         assert_eq!(response.download_total, Some(1024));
@@ -748,7 +762,10 @@ mod tests {
         .await;
 
         // The open fails (no such pipe); the call must resolve, not time out.
-        assert!(result.is_ok(), "stream_websocket_text hung on a dead endpoint");
+        assert!(
+            result.is_ok(),
+            "stream_websocket_text hung on a dead endpoint"
+        );
         assert!(result.unwrap().is_err(), "expected a connection error");
     }
 
@@ -771,26 +788,9 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_ok(), "stream_websocket_text hung despite a pre-set stop");
-    }
-}
-
-impl ControllerEndpoint {
-    pub fn path(self) -> &'static str {
-        match self {
-            Self::Version => "/version",
-            Self::Configs => "/configs",
-            Self::Proxies => "/proxies",
-            Self::ProxyProviders => "/providers/proxies",
-            Self::RuleProviders => "/providers/rules",
-            Self::Rules => "/rules",
-            Self::Connections => "/connections",
-            Self::Logs => "/ws/logs",
-            Self::Traffic => "/ws/traffic",
-            Self::Flows => "/ws/flows",
-            Self::DnsQuery => "/dns/query",
-            Self::Memory => "/memory",
-            Self::Restart => "/restart",
-        }
+        assert!(
+            result.is_ok(),
+            "stream_websocket_text hung despite a pre-set stop"
+        );
     }
 }

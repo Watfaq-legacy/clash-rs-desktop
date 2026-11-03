@@ -6,7 +6,14 @@ use serde::{Deserialize, Serialize};
 
 /// Suffixes that are local by convention (RFC 6762 / 8375 and common
 /// router defaults). Always direct, resolved by the system DNS.
-pub const LOCAL_SUFFIXES: [&str; 6] = ["lan", "local", "localdomain", "home.arpa", "internal", "intranet"];
+pub const LOCAL_SUFFIXES: [&str; 6] = [
+    "lan",
+    "local",
+    "localdomain",
+    "home.arpa",
+    "internal",
+    "intranet",
+];
 
 /// Private, link-local and CGNAT ranges (CGNAT also covers Tailscale).
 pub const LOCAL_CIDRS: [&str; 9] = [
@@ -110,9 +117,11 @@ mod platform {
             push_suffixes(get_string(&key, "SearchList"));
             for name in ["NameServer", "DhcpNameServer"] {
                 if let Some(raw) = get_string(&key, name) {
-                    network
-                        .dns_servers
-                        .extend(raw.split([',', ' ']).filter(|s| !s.is_empty()).map(str::to_owned));
+                    network.dns_servers.extend(
+                        raw.split([',', ' '])
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned),
+                    );
                 }
             }
         }
@@ -125,9 +134,17 @@ mod platform {
         // SAFETY: size query, then a buffer of `size` bytes; REG_SZ is
         // NUL-terminated by RRF_RT_REG_SZ.
         unsafe {
-            RegGetValueW(HKEY_LOCAL_MACHINE, &key, &name, RRF_RT_REG_SZ, None, None, Some(&mut size))
-                .ok()
-                .ok()?;
+            RegGetValueW(
+                HKEY_LOCAL_MACHINE,
+                &key,
+                &name,
+                RRF_RT_REG_SZ,
+                None,
+                None,
+                Some(&mut size),
+            )
+            .ok()
+            .ok()?;
             let mut buf = vec![0u16; (size as usize).div_ceil(2)];
             RegGetValueW(
                 HKEY_LOCAL_MACHINE,
@@ -152,16 +169,31 @@ mod platform {
         // SAFETY: the key is opened read-only and closed below; the name
         // buffer outlives each enumeration call.
         unsafe {
-            if RegOpenKeyExW(HKEY_LOCAL_MACHINE, &HSTRING::from(path), None, KEY_READ, &mut key)
-                .is_err()
+            if RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                &HSTRING::from(path),
+                None,
+                KEY_READ,
+                &mut key,
+            )
+            .is_err()
             {
                 return names;
             }
             for index in 0.. {
                 let mut buf = [0u16; 256];
                 let mut len = buf.len() as u32;
-                if RegEnumKeyExW(key, index, Some(PWSTR(buf.as_mut_ptr())), &mut len, None, None, None, None)
-                    .is_err()
+                if RegEnumKeyExW(
+                    key,
+                    index,
+                    Some(PWSTR(buf.as_mut_ptr())),
+                    &mut len,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .is_err()
                 {
                     break;
                 }
@@ -190,7 +222,9 @@ mod platform {
         for line in text.lines() {
             let mut words = line.split_whitespace();
             match words.next() {
-                Some("search" | "domain") => network.search_suffixes.extend(words.map(str::to_owned)),
+                Some("search" | "domain") => {
+                    network.search_suffixes.extend(words.map(str::to_owned))
+                }
                 Some("nameserver") => network.dns_servers.extend(words.next().map(str::to_owned)),
                 _ => {}
             }
@@ -206,7 +240,11 @@ mod tests {
     #[test]
     fn suffixes_are_normalised_and_merged_with_builtins() {
         let network = LocalNetwork {
-            search_suffixes: normalise(vec![".Corp.Example.com.".into(), "".into(), "tail1234.ts.net".into()]),
+            search_suffixes: normalise(vec![
+                ".Corp.Example.com.".into(),
+                "".into(),
+                "tail1234.ts.net".into(),
+            ]),
             dns_servers: vec![],
         };
         let all = network.local_suffixes();

@@ -19,10 +19,9 @@ use serde_yaml::Value;
 
 use crate::{
     ActiveCore, AppPaths, ClashIpcClient, ClashIpcClientConfig, ClashProcessManager,
-    CoreLaunchRequest, CoreState, CoreUpdateManager, ManagedCoreFiles, ProfileStore,
+    CoreLaunchRequest, CoreLog, CoreState, CoreUpdateManager, ManagedCoreFiles, ProfileStore,
     SettingsStore, SystemProxyBackend, SystemProxySnapshot,
     elevate::{Elevated, run_elevated},
-    CoreLog,
     generate::{Bypass, ConfigInputs, generate},
     leak::LeakDetector,
     network::LocalNetwork,
@@ -219,7 +218,10 @@ impl Engine {
     }
 
     /// The installed core, downloading the latest release on first use.
-    pub async fn ensure_core(&self, on_step: &(dyn Fn(&str) + Send + Sync)) -> anyhow::Result<ActiveCore> {
+    pub async fn ensure_core(
+        &self,
+        on_step: &(dyn Fn(&str) + Send + Sync),
+    ) -> anyhow::Result<ActiveCore> {
         if let Some(core) = self.installed_core() {
             return Ok(core);
         }
@@ -285,7 +287,12 @@ impl Engine {
 
     // ---- config ----------------------------------------------------------------
 
-    fn build_config(&self, port: u16, tun: bool, controller_ipc: Option<&str>) -> anyhow::Result<Value> {
+    fn build_config(
+        &self,
+        port: u16,
+        tun: bool,
+        controller_ipc: Option<&str>,
+    ) -> anyhow::Result<Value> {
         let profile = self
             .profiles
             .active_profile()
@@ -294,9 +301,12 @@ impl Engine {
             .ok_or_else(|| anyhow::anyhow!("订阅文件丢失，请更新订阅"))?;
 
         let mut overrides = Vec::new();
-        for path in [Some(self.paths.global_override_path()), profile.profile_override_path.clone()]
-            .into_iter()
-            .flatten()
+        for path in [
+            Some(self.paths.global_override_path()),
+            profile.profile_override_path.clone(),
+        ]
+        .into_iter()
+        .flatten()
         {
             if let Some(layer) = read_yaml(&path).context("自定义配置格式有误")? {
                 overrides.push(layer);
@@ -308,7 +318,9 @@ impl Engine {
         for merged in self.profiles.merged_profiles() {
             match read_yaml(&merged.source_path) {
                 Ok(Some(config)) => extra_subscriptions.push((merged.name.clone(), config)),
-                _ => self.log.note(&format!("合并订阅「{}」时读取失败，已跳过", merged.name)),
+                _ => self
+                    .log
+                    .note(&format!("合并订阅「{}」时读取失败，已跳过", merged.name)),
             }
         }
 
@@ -383,7 +395,12 @@ impl Engine {
         result
     }
 
-    async fn connect_with(&mut self, mode: ConnectMode, core: &ActiveCore, port: u16) -> anyhow::Result<()> {
+    async fn connect_with(
+        &mut self,
+        mode: ConnectMode,
+        core: &ActiveCore,
+        port: u16,
+    ) -> anyhow::Result<()> {
         match mode {
             ConnectMode::SystemProxy => {
                 self.start_local(core, port, false).await?;
@@ -398,7 +415,9 @@ impl Engine {
                     },
                     _ => None,
                 };
-                let ignore = std::iter::once(std::process::id()).chain(core_pid).collect();
+                let ignore = std::iter::once(std::process::id())
+                    .chain(core_pid)
+                    .collect();
                 self.leaks = Some(LeakDetector::start(ignore));
                 Ok(())
             }
@@ -419,7 +438,10 @@ impl Engine {
         process.start_direct(&self.local_launch(core, &config_path))?;
         let client = controller_client(&ipc);
         if let Err(error) = wait_ready(&client, Duration::from_secs(15)).await {
-            let reason = process.log().last_error().unwrap_or_else(|| error.to_string());
+            let reason = process
+                .log()
+                .last_error()
+                .unwrap_or_else(|| error.to_string());
             let _ = process.stop();
             anyhow::bail!("内核启动失败：{reason}");
         }
@@ -523,7 +545,8 @@ impl Engine {
             Some(Backend::Local(..)) => {
                 let core = self.installed_core().context("内核文件丢失")?;
                 let tun = self.connected_mode() == Some(ConnectMode::Tun);
-                let config = self.build_config(port, tun, Some(&local_controller_path(&self.paths)))?;
+                let config =
+                    self.build_config(port, tun, Some(&local_controller_path(&self.paths)))?;
                 self.running_config = Some(config.clone());
                 self.write_local_config(&core, &config)?;
                 // `{}` = reload the startup config file we just replaced. A
@@ -543,7 +566,9 @@ impl Engine {
                 let value = self.build_config(port, true, None)?;
                 let config = serde_yaml::to_string(&value)?;
                 self.running_config = Some(value);
-                if let Response::Error { message } = self.service.send(&Request::Reload { config }).await? {
+                if let Response::Error { message } =
+                    self.service.send(&Request::Reload { config }).await?
+                {
                     anyhow::bail!("配置有误：{message}");
                 }
             }
@@ -572,7 +597,8 @@ impl Engine {
     /// Re-apply remembered picks. Groups or nodes that no longer exist
     /// (subscription changed) are skipped silently.
     async fn restore_selections(&self) {
-        let (Some(client), Some(profile)) = (&self.controller, self.profiles.active_profile()) else {
+        let (Some(client), Some(profile)) = (&self.controller, self.profiles.active_profile())
+        else {
             return;
         };
         let Some(picks) = self.settings.settings().selections.get(&profile.id.0) else {
@@ -589,10 +615,14 @@ impl Engine {
         let reason = match self.backend.as_mut()? {
             Backend::Local(process, _) => match process.state() {
                 CoreState::Running { .. } => return None,
-                CoreState::Failed { message } => {
-                    process.log().last_error().unwrap_or(format!("内核已退出（{message}）"))
-                }
-                _ => process.log().last_error().unwrap_or_else(|| "内核已退出".to_owned()),
+                CoreState::Failed { message } => process
+                    .log()
+                    .last_error()
+                    .unwrap_or(format!("内核已退出（{message}）")),
+                _ => process
+                    .log()
+                    .last_error()
+                    .unwrap_or_else(|| "内核已退出".to_owned()),
             },
             Backend::Service => match self.service.send(&Request::Status).await {
                 Ok(Response::Status { status }) if status.running => return None,
@@ -612,7 +642,11 @@ impl Engine {
     /// One-time privileged setup for TUN. `service_exe` is the service binary
     /// shipped with the app (Windows only).
     pub async fn install_tun_support(&self, service_exe: &Path) -> anyhow::Result<()> {
-        anyhow::ensure!(service_exe.exists(), "找不到增强模式组件：{}", service_exe.display());
+        anyhow::ensure!(
+            service_exe.exists(),
+            "找不到增强模式组件：{}",
+            service_exe.display()
+        );
         let core = self.ensure_core(&|_| {}).await?;
         let (exe, args) = if cfg!(windows) {
             (
@@ -630,7 +664,10 @@ impl Engine {
                 fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
             }
             // pkexec passes argv verbatim (split on whitespace by run_elevated).
-            (staged, format!("--install --core {}", core.binary_path.display()))
+            (
+                staged,
+                format!("--install --core {}", core.binary_path.display()),
+            )
         };
         match tokio::task::spawn_blocking(move || run_elevated(&exe, &args)).await?? {
             Elevated::Exited(0) => {}
@@ -649,7 +686,7 @@ impl Engine {
 
     // ---- diagnostics -----------------------------------------------------------
 
-    /// Run the checks. Read-only. 	horough adds delay tests and route
+    /// Run the checks. Read-only. `thorough` adds delay tests and route
     /// lookups (a few seconds, some traffic); the background watchdog uses
     /// the quick variant.
     pub async fn diagnose(&self, thorough: bool) -> Vec<crate::diagnose::Finding> {
@@ -675,21 +712,22 @@ impl Engine {
         if let Some(client) = self.controller.as_ref().filter(|_| thorough) {
             const PROBE: &str = "http://www.gstatic.com/generate_204";
             let delay = |reply: anyhow::Result<serde_json::Value>| {
-                reply.ok().and_then(|v| v.get("delay").and_then(|d| d.as_u64())).filter(|d| *d > 0)
+                reply
+                    .ok()
+                    .and_then(|v| v.get("delay").and_then(|d| d.as_u64()))
+                    .filter(|d| *d > 0)
             };
             let main = self
                 .running_config
                 .as_ref()
                 .and_then(crate::generate::main_select_group);
-            let (direct, proxied) = tokio::join!(
-                client.test_proxy_delay("DIRECT", PROBE, 5000),
-                async {
+            let (direct, proxied) =
+                tokio::join!(client.test_proxy_delay("DIRECT", PROBE, 5000), async {
                     match &main {
                         Some(group) => Some(client.test_proxy_delay(group, PROBE, 5000).await),
                         None => None,
                     }
-                }
-            );
+                });
             ctx.direct_delay = Some(delay(direct));
             ctx.proxy_delay = proxied.map(delay);
 
@@ -704,7 +742,10 @@ impl Engine {
                     .iter()
                     .filter(|conn| {
                         let meta = &conn["metadata"];
-                        let inbound = meta["type"].as_str().unwrap_or_default().to_ascii_lowercase();
+                        let inbound = meta["type"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase();
                         let host = meta["host"].as_str().unwrap_or_default();
                         let ip = meta["destinationIP"].as_str().unwrap_or_default();
                         inbound.contains("tun")
@@ -789,7 +830,9 @@ impl Engine {
         let bypass = Bypass::new(&self.settings.settings().bypass, &self.local);
         for entry in bypass.wininet_entries() {
             if !target.bypass.contains(&entry) {
-                target.bypass.insert(target.bypass.len().saturating_sub(1), entry);
+                target
+                    .bypass
+                    .insert(target.bypass.len().saturating_sub(1), entry);
             }
         }
         target.port = port;
@@ -867,7 +910,12 @@ async fn wait_dns(client: &ClashIpcClient, timeout: Duration) {
         let answered = client
             .query_dns("www.gstatic.com", "A")
             .await
-            .is_ok_and(|reply| reply.get("Answer").and_then(|a| a.as_array()).is_some_and(|a| !a.is_empty()));
+            .is_ok_and(|reply| {
+                reply
+                    .get("Answer")
+                    .and_then(|a| a.as_array())
+                    .is_some_and(|a| !a.is_empty())
+            });
         if answered {
             return;
         }
@@ -948,11 +996,18 @@ mod tests {
         let error = anyhow::anyhow!(
             "clash-rs config validation failed with exit code: 1\nstdout:\n\nstderr:\nconfiguration file C:\\x\\c.yaml test failed: invalid config: invalid config: unsupported rule type: BOGUS-RULE"
         );
-        assert_eq!(first_error_line(&error), "unsupported rule type: BOGUS-RULE");
+        assert_eq!(
+            first_error_line(&error),
+            "unsupported rule type: BOGUS-RULE"
+        );
 
-        let yaml_error =
-            anyhow::anyhow!("clash-rs config validation failed\nstderr:\nrules:\n  - x\n\n: duplicate entry with key \"rules\"");
-        assert_eq!(first_error_line(&yaml_error), "duplicate entry with key \"rules\"");
+        let yaml_error = anyhow::anyhow!(
+            "clash-rs config validation failed\nstderr:\nrules:\n  - x\n\n: duplicate entry with key \"rules\""
+        );
+        assert_eq!(
+            first_error_line(&yaml_error),
+            "duplicate entry with key \"rules\""
+        );
     }
 
     #[test]

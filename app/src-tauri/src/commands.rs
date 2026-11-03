@@ -6,7 +6,8 @@ use std::{path::PathBuf, time::Duration};
 
 use clash_rs_desktop_core::{
     AppPaths, ConnectMode, ControllerConfigPatch, CustomRule, NeedsServiceInstall, ProfileId,
-    ProfileSource, ProfileStore, RoutingMode, RuleAction, RuleKind, engine::CoreUpdateInfo, fetch_subscription,
+    ProfileSource, ProfileStore, RoutingMode, RuleAction, RuleKind, engine::CoreUpdateInfo,
+    fetch_subscription,
 };
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -119,7 +120,9 @@ async fn apply_config_change(app: &AppHandle) -> CmdResult<View> {
         }
         // A config the core rejects should not take the connection down.
         Err(error)
-            if ["配置有误", "自定义配置"].iter().any(|p| error.to_string().starts_with(p)) =>
+            if ["配置有误", "自定义配置"]
+                .iter()
+                .any(|p| error.to_string().starts_with(p)) =>
         {
             Err(user_error(error))
         }
@@ -180,7 +183,9 @@ async fn change_profiles(
                 let engine = state.engine.lock().await;
                 publish(app, |view| sync_from_engine(view, &engine));
             }
-            Err(format!("这个配置无法使用，已切回原来的配置。原因：{message}"))
+            Err(format!(
+                "这个配置无法使用，已切回原来的配置。原因：{message}"
+            ))
         }
     }
 }
@@ -420,7 +425,10 @@ pub async fn add_subscription(
 /// Import a local Clash config (or a text file of share links).
 #[tauri::command]
 pub async fn import_file(app: AppHandle, path: PathBuf) -> CmdResult<View> {
-    change_profiles(&app, |profiles, paths| profiles.import_file(paths, &path).map(|_| ())).await
+    change_profiles(&app, |profiles, paths| {
+        profiles.import_file(paths, &path).map(|_| ())
+    })
+    .await
 }
 
 /// Merge another subscription's nodes into the active one (or stop).
@@ -434,7 +442,10 @@ pub async fn set_merged(app: AppHandle, id: String, merged: bool) -> CmdResult<V
             .profile(&ProfileId(id.clone()))
             .map(|p| p.name.clone())
             .unwrap_or_default();
-        engine.note(&format!("{}合并订阅「{name}」", if merged { "" } else { "取消" }));
+        engine.note(&format!(
+            "{}合并订阅「{name}」",
+            if merged { "" } else { "取消" }
+        ));
     }
     change_profiles(&app, |profiles, _| {
         profiles.set_merged(&ProfileId(id), merged);
@@ -469,7 +480,9 @@ pub async fn set_bypass(app: AppHandle, entries: Vec<String>) -> CmdResult<View>
     // System-proxy exceptions are set at connect time, so reconnect there;
     // TUN picks the list up through a hot reload.
     let state = app.state::<AppState>();
-    if state.view().phase == Phase::Connected && state.view().connected_mode == Some(ConnectMode::SystemProxy) {
+    if state.view().phase == Phase::Connected
+        && state.view().connected_mode == Some(ConnectMode::SystemProxy)
+    {
         return reconnect(&app).await;
     }
     apply_config_change(&app).await
@@ -505,7 +518,10 @@ pub async fn ignore_leak(app: AppHandle, app_name: String) -> CmdResult<View> {
         ignored.push(app_name.clone());
     }
     store.save().map_err(user_error)?;
-    Ok(publish(&app, |view| view.leaks.retain(|leak| !leak.eq_ignore_ascii_case(&app_name))))
+    Ok(publish(&app, |view| {
+        view.leaks
+            .retain(|leak| !leak.eq_ignore_ascii_case(&app_name))
+    }))
 }
 
 #[tauri::command]
@@ -527,7 +543,10 @@ pub async fn run_diagnostics(
 
 /// Apply a one-click remedy from the diagnostics screen.
 #[tauri::command]
-pub async fn apply_fix(app: AppHandle, fix: clash_rs_desktop_core::diagnose::Fix) -> CmdResult<View> {
+pub async fn apply_fix(
+    app: AppHandle,
+    fix: clash_rs_desktop_core::diagnose::Fix,
+) -> CmdResult<View> {
     use clash_rs_desktop_core::diagnose::Fix;
     let state = app.state::<AppState>();
     let connected = state.view().phase == Phase::Connected;
@@ -540,11 +559,25 @@ pub async fn apply_fix(app: AppHandle, fix: clash_rs_desktop_core::diagnose::Fix
                 store.settings_mut().connect_mode = ConnectMode::Tun;
                 store.save().map_err(user_error)?;
             }
-            if connected { reconnect(&app).await? } else { connect_flow(&app).await? }
+            if connected {
+                reconnect(&app).await?
+            } else {
+                connect_flow(&app).await?
+            }
         }
         Fix::EnableTunIpv6 => {
-            state.engine.lock().await.apply_fix(fix).await.map_err(user_error)?;
-            if connected { reconnect(&app).await? } else { state.view() }
+            state
+                .engine
+                .lock()
+                .await
+                .apply_fix(fix)
+                .await
+                .map_err(user_error)?;
+            if connected {
+                reconnect(&app).await?
+            } else {
+                state.view()
+            }
         }
         other => {
             let mut engine = state.engine.lock().await;
@@ -572,10 +605,12 @@ pub fn spawn_health_check(app: AppHandle) {
             if view.phase != Phase::Connected {
                 continue;
             }
-            if view.connected_mode == Some(ConnectMode::Tun) && round % 4 != 0 {
+            if view.connected_mode == Some(ConnectMode::Tun) && !round.is_multiple_of(4) {
                 continue;
             }
-            let Ok(engine) = state.engine.try_lock() else { continue };
+            let Ok(engine) = state.engine.try_lock() else {
+                continue;
+            };
             let findings = engine.diagnose(false).await;
             drop(engine);
             use clash_rs_desktop_core::diagnose::Level;
@@ -599,10 +634,14 @@ pub fn spawn_leak_watch(app: AppHandle) {
             tick.tick().await;
             let state = app.state::<AppState>();
             let view = state.view();
-            if view.phase != Phase::Connected || view.connected_mode != Some(ConnectMode::SystemProxy) {
+            if view.phase != Phase::Connected
+                || view.connected_mode != Some(ConnectMode::SystemProxy)
+            {
                 continue;
             }
-            let Ok(engine) = state.engine.try_lock() else { continue };
+            let Ok(engine) = state.engine.try_lock() else {
+                continue;
+            };
             let found = tokio::task::block_in_place(|| engine.leaking_apps());
             drop(engine);
             // Sticky for the session: a launcher's short burst still counts.
@@ -662,7 +701,10 @@ pub async fn remove_profile(app: AppHandle, id: String) -> CmdResult<View> {
     let id = ProfileId(id);
     let was_active = {
         let engine = state.engine.lock().await;
-        engine.profiles().active_profile().is_some_and(|p| p.id == id)
+        engine
+            .profiles()
+            .active_profile()
+            .is_some_and(|p| p.id == id)
     };
 
     let has_other = {
@@ -818,7 +860,10 @@ pub async fn select_node(
     name: String,
 ) -> CmdResult<NodesView> {
     let client = controller(&state).await?;
-    client.select_proxy(&group, &name).await.map_err(user_error)?;
+    client
+        .select_proxy(&group, &name)
+        .await
+        .map_err(user_error)?;
     // Remembered per subscription; restored on every connect/reload.
     let _ = state.engine.lock().await.remember_selection(&group, &name);
     // Drop connections still pinned to the old node so the switch is felt now.
@@ -883,7 +928,8 @@ pub async fn write_override(app: AppHandle, text: String) -> CmdResult<View> {
 pub fn handle_deep_links(app: &AppHandle, urls: impl IntoIterator<Item = String>) {
     for raw in urls {
         let Ok(url) = reqwest_url(&raw) else { continue };
-        if !matches!(url.scheme(), "choclite" | "clash") || url.host_str() != Some("install-config") {
+        if !matches!(url.scheme(), "choclite" | "clash") || url.host_str() != Some("install-config")
+        {
             continue;
         }
         let Some(sub) = url
@@ -907,13 +953,17 @@ pub fn handle_deep_links(app: &AppHandle, urls: impl IntoIterator<Item = String>
 }
 
 fn pending_import() -> &'static std::sync::Mutex<Option<Value>> {
-    static PENDING: std::sync::OnceLock<std::sync::Mutex<Option<Value>>> = std::sync::OnceLock::new();
+    static PENDING: std::sync::OnceLock<std::sync::Mutex<Option<Value>>> =
+        std::sync::OnceLock::new();
     PENDING.get_or_init(Default::default)
 }
 
 #[tauri::command]
 pub fn take_deep_link() -> Option<Value> {
-    pending_import().lock().unwrap_or_else(|e| e.into_inner()).take()
+    pending_import()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
 }
 
 fn reqwest_url(raw: &str) -> Result<tauri::Url, ()> {
