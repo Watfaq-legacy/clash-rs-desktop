@@ -1,47 +1,129 @@
 # Choclite for Desktop
 
-A one-switch desktop client for [clash-rs](https://github.com/Watfaq/clash-rs). Paste a subscription (or click a provider's import link), press the button, done. Power-user options live one level down.
+**English** · [简体中文](README.zh-CN.md)
 
-Windows and Linux. Tauri 2 + Svelte 5 over a Rust core.
+Choclite is a desktop client for [clash-rs](https://github.com/Watfaq/clash-rs) built around a single switch. Add a subscription, turn it on, and it works. Everything else — routing rules, custom configuration, diagnostics — is one level down for those who need it.
 
-| Level | What you see |
-|---|---|
-| Home | power switch, live speed, current node, subscription usage/expiry, quiet hints when something needs attention |
-| Settings | routing mode, launch at login, auto-connect, subscription management and auto-update, theme, core updates |
-| 网络 | 不走代理的地址 (bypass list; LAN and local domains handled automatically), 网络诊断 |
-| 高级 | 增强模式 (TUN) incl. IPv6 capture, 网站规则 (site → proxy/direct/block), 自定义配置 (raw YAML), 运行日志 |
+Available for **Windows** and **Linux**. On macOS, use the native Choclite app.
 
-## Develop
+<p align="center">
+  <img src="docs/images/home-light.png" width="240" alt="Home screen, connected">
+  <img src="docs/images/home-dark.png" width="240" alt="Home screen, dark theme">
+  <img src="docs/images/subscriptions.png" width="240" alt="Subscription management">
+  <img src="docs/images/diagnostics.png" width="240" alt="Network diagnostics">
+</p>
 
-Requirements: Rust 1.95+, Node 20+, pnpm. Linux also needs the [Tauri system packages](https://tauri.app/start/prerequisites/#linux).
+## Features
 
-```powershell
+**Simple by default**
+- One switch on the home screen, with live speed, the current node and subscription usage.
+- Uses the system proxy out of the box. No administrator rights, no prompts.
+- The node you pick is remembered per subscription, across restarts and mode changes.
+- Subscriptions update automatically on the provider's schedule.
+
+**Works with real-world networks**
+- LAN addresses, `.lan` / `.local` / `home.arpa` names and the network's own DNS suffixes (company networks, VPNs, Tailscale) always connect directly and are resolved by the system's DNS.
+- A list of addresses that should never use the proxy.
+- Detects programs that ignore the system proxy (games, launchers, command-line tools) and offers Enhanced Mode for them.
+
+**Enhanced Mode (TUN)**
+- Captures traffic from every program, optionally including IPv6.
+- Installed once with a single administrator prompt; switching it on and off afterwards needs no further prompts.
+
+**Subscriptions**
+- Clash subscriptions, base64 link lists, share links (`ss://`, `trojan://`, `vmess://`, `vless://`, `hysteria2://`) and local configuration files.
+- One-click import from provider websites via `choclite://` links (and `clash://` when no other client handles them). Imports always ask for confirmation.
+- Merge several subscriptions: automatic selection then picks the fastest node across all of them.
+
+**For advanced users**
+- Site rules: send a site, IP range or program through the proxy, direct, or block it — without writing YAML.
+- Custom configuration: raw Clash YAML layered on top of the subscription, preserved across updates.
+- Network diagnostics: tells local network, node, routing, DNS, IPv6 and system proxy problems apart, with one-click fixes.
+- Logs written to rotating files.
+
+**Safe by design**
+- The original system proxy settings are restored on disconnect, if the core crashes, on exit, and on the next launch after an unexpected shutdown.
+- A configuration the core cannot run is rolled back instead of dropping the connection.
+
+## Installation
+
+### Windows
+
+Download and run `Choclite_<version>_x64-setup.exe`.
+
+- Installs for the current user only and **does not require administrator rights**.
+- Requires Microsoft Edge WebView2, which ships with Windows 10 (recent builds) and Windows 11; the installer adds it if missing.
+- On first connection Choclite downloads the latest clash-rs release.
+- Enabling Enhanced Mode installs a small background service (`ChocliteService`) after one administrator prompt. It is removed together with the app.
+
+### Linux
+
+Install the `.deb` package, or run the AppImage.
+
+- System proxy mode configures GNOME-compatible desktops (GNOME, Cinnamon, Budgie, Pantheon) through `gsettings`.
+- Enhanced Mode installs a systemd service (`choclite.service`) after one `pkexec` password prompt. The `.deb` package removes it on uninstall.
+
+## How it works
+
+Choclite runs the official clash-rs binary and builds its configuration from layers, in increasing priority:
+
+1. the subscription (plus any merged subscriptions);
+2. the user's custom configuration;
+3. bypass and site rules;
+4. settings made in the app (ports, routing mode, Enhanced Mode, IPv6).
+
+Settings made in the app always take precedence over configuration files. Changes are applied with a hot reload, validated first, so the connection is not interrupted.
+
+**System proxy mode** runs clash-rs as a child process of the app, bound to its lifetime, and points the operating system's proxy at it.
+
+**Enhanced Mode** runs clash-rs inside a privileged service so it can create a TUN device. The service only ever runs its own copy of clash-rs from an administrator-only directory, and sanitises any configuration it receives: controller and dashboard settings are stripped, provider caches are confined to its data directory, and paths outside it are rejected. On Windows, [Wintun](https://www.wintun.net/) is downloaded during service installation and verified against a pinned SHA-256 hash.
+
+## Building from source
+
+Requirements: Rust 1.95 or later, Node.js 20 or later, and pnpm. On Linux, also install the [Tauri system dependencies](https://tauri.app/start/prerequisites/#linux).
+
+```sh
 cd app
 pnpm install
 pnpm tauri dev
 ```
 
-On first connect the app downloads the latest `clash-rs` release. To use a local build instead set `CLASH_RS_DESKTOP_CORE` to its path. For TUN mode in dev, build the service too: `cargo build -p clash-rs-desktop-service`.
+To test Enhanced Mode during development, build the service as well:
+
+```sh
+cargo build -p clash-rs-desktop-service
+```
+
+To use a local clash-rs build instead of downloading a release, set `CLASH_RS_DESKTOP_CORE` to the path of the binary.
 
 Checks:
 
-```powershell
+```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets
-cd app; pnpm check
+cd app && pnpm check
 ```
 
-Packaging: `pnpm bundle:windows` (NSIS, includes the service) or `pnpm bundle:linux` (deb, AppImage).
+Packaging:
 
-## How it works
+```sh
+cd app
+pnpm bundle:windows   # NSIS installer, including the service
+pnpm bundle:linux     # .deb and AppImage (run on Linux)
+```
 
-- **System proxy mode** (default): the core runs as a child of the app (in a kill-on-close job) and the OS proxy points at it. No admin rights. Programs that ignore the system proxy are detected and the user is offered 增强模式.
-- **增强模式 (TUN)**: a small privileged service (`ChocliteService` on Windows, `choclite.service` on Linux) runs the core with a TUN device. Installed once with one UAC / polkit prompt. The service only runs its own core binary and sanitises configs before use.
-- **Subscriptions**: Clash YAML, base64 link lists, single share links (`ss://`, `trojan://`, `vmess://`, `vless://`, `hysteria2://`) or a local file. Several subscriptions can be merged: their nodes join the primary's groups and auto-selection spans all of them.
-- **Config layers**: subscription → custom config → bypass/site rules → app settings. App settings always win. Changes hot-reload; a config the core can't run is rolled back instead of dropping the connection.
-- **Local networks**: private ranges, `.lan`/`.local`/`home.arpa` and the machine's DNS search suffixes (DHCP, company VPN, Tailscale) go direct; under TUN they are resolved by the system's own DNS.
-- **Safety**: the original system proxy is snapshotted and restored on disconnect, core crash, quit, and the next launch after a crash. Node picks are remembered per subscription.
-- **Diagnostics**: tells local-network, node, route (another VPN, routing loops), DNS, IPv6 and system-proxy problems apart, with one-click fixes. Uses native OS APIs only.
-- **Logs**: core output and app events in rotating files (≈6 MB max).
+## Project layout
 
-Flag glyphs: [Twemoji](https://github.com/twitter/twemoji) country flags, CC-BY 4.0. TUN on Windows uses [Wintun](https://www.wintun.net/) (downloaded at service install, pinned by hash).
+| Path | Contents |
+|---|---|
+| `crates/clash-rs-desktop-core` | Connection engine, configuration generation, subscriptions, system proxy, diagnostics, service protocol |
+| `crates/clash-rs-desktop-service` | Privileged service for Enhanced Mode (Windows service / systemd unit) |
+| `app/src-tauri` | Tauri backend: commands, background tasks, tray |
+| `app/src` | User interface (Svelte 5) |
+| `docs` | Implementation plan and screenshots |
+
+## License
+
+MIT.
+
+Country flag glyphs are from [Twemoji](https://github.com/twitter/twemoji), licensed under CC-BY 4.0.
