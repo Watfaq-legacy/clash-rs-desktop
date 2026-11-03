@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Build deb + AppImage on Linux. Needs the Tauri system packages and
-# `cargo install tauri-cli --version ^2`.
+# Build deb + AppImage on Linux. Needs the Tauri system packages.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -10,5 +9,4 @@ target_dir="${CARGO_TARGET_DIR:-../target}"
 mkdir -p src-tauri/linux/bin
 install -m 755 "$target_dir/release/clash-rs-desktop-service" src-tauri/linux/bin/
 
-cd src-tauri
-cargo tauri build --bundles deb,appimage --config tauri.bundle-linux.json "$@"
+pnpm tauri build --bundles deb,appimage --config src-tauri/tauri.bundle-linux.json "$@"
