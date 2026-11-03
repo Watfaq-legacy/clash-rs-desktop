@@ -5,7 +5,7 @@
 # - Push a tag `vX.Y.Z` (must match the app version) to release it.
 # - Or run the workflow by hand to build the current commit into a draft.
 #
-# Needs the secret `RELEASE_TOKEN`: a fine-grained token for the
+# Needs the secret `WATFAQ_RELEASE_PAT`: a fine-grained token for the
 # distribution repo only, with "Contents" and "Workflows" read and write
 # (syncing the fork needs Workflows whenever a workflow file changed).
 name: Release
@@ -31,10 +31,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check the release token
         env:
-          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          RELEASE_TOKEN: ${{ secrets.WATFAQ_RELEASE_PAT }}
         run: |
           if [[ -z "$RELEASE_TOKEN" ]]; then
-            echo "::error::Secret RELEASE_TOKEN is missing (see the top of this file)"
+            echo "::error::Secret WATFAQ_RELEASE_PAT is missing (see the top of this file)"
             exit 1
           fi
       - id: version
@@ -117,12 +117,12 @@ jobs:
           merge-multiple: true
       - name: Sync the distribution repo
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.WATFAQ_RELEASE_PAT }}
         # Fast-forward the fork so the release can point at this commit.
         run: gh api -X POST "repos/$RELEASE_REPO/merge-upstream" -f branch=master
       - name: Create or update the draft release
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.WATFAQ_RELEASE_PAT }}
           GH_REPO: ${{ env.RELEASE_REPO }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
