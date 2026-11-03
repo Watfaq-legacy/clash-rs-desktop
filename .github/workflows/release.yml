@@ -5,8 +5,9 @@
 # - Push a tag `vX.Y.Z` (must match the app version) to release it.
 # - Or run the workflow by hand to build the current commit into a draft.
 #
-# Needs the secret `RELEASE_TOKEN`: a fine-grained token with
-# "Contents: read and write" on the distribution repo only.
+# Needs the secret `RELEASE_TOKEN`: a fine-grained token for the
+# distribution repo only, with "Contents" and "Workflows" read and write
+# (syncing the fork needs Workflows whenever a workflow file changed).
 name: Release
 
 on:
