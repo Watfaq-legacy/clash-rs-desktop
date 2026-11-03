@@ -1,8 +1,12 @@
 # Builds the Windows installer and Linux packages and attaches them to a
-# draft GitHub release. Publishing the draft is a manual step.
+# draft release on the public distribution repo (a fork of this one).
+# Publishing the draft is a manual step.
 #
 # - Push a tag `vX.Y.Z` (must match the app version) to release it.
 # - Or run the workflow by hand to build the current commit into a draft.
+#
+# Needs the secret `RELEASE_TOKEN`: a fine-grained token with
+# "Contents: read and write" on the distribution repo only.
 name: Release
 
 on:
@@ -15,6 +19,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  RELEASE_REPO: Watfaq-legacy/clash-rs-desktop
 
 jobs:
   version:
@@ -23,6 +28,14 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check the release token
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if [[ -z "$RELEASE_TOKEN" ]]; then
+            echo "::error::Secret RELEASE_TOKEN is missing (see the top of this file)"
+            exit 1
+          fi
       - id: version
         name: Read the app version
         run: |
@@ -96,17 +109,20 @@ jobs:
   release:
     needs: [version, windows, linux]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      - name: Sync the distribution repo
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        # Fast-forward the fork so the release can point at this commit.
+        run: gh api -X POST "repos/$RELEASE_REPO/merge-upstream" -f branch=master
       - name: Create or update the draft release
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_REPO: ${{ env.RELEASE_REPO }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           # Multi-path artifacts keep their bundle/<kind>/ folders; flatten.

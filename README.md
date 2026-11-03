@@ -50,7 +50,7 @@ Available for **Windows** and **Linux**. On macOS, use the native Choclite app.
 
 ### Windows
 
-Download and run `Choclite_<version>_x64-setup.exe`.
+Download `Choclite_<version>_x64-setup.exe` from the [releases page](https://github.com/Watfaq-legacy/clash-rs-desktop/releases) and run it.
 
 - Installs for the current user only and **does not require administrator rights**.
 - Requires Microsoft Edge WebView2, which ships with Windows 10 (recent builds) and Windows 11; the installer adds it if missing.
@@ -59,7 +59,7 @@ Download and run `Choclite_<version>_x64-setup.exe`.
 
 ### Linux
 
-Install the `.deb` package, or run the AppImage.
+Download the `.deb` package or the AppImage from the [releases page](https://github.com/Watfaq-legacy/clash-rs-desktop/releases).
 
 - System proxy mode configures GNOME-compatible desktops (GNOME, Cinnamon, Budgie, Pantheon) through `gsettings`.
 - Enhanced Mode installs a systemd service (`choclite.service`) after one `pkexec` password prompt. The `.deb` package removes it on uninstall.

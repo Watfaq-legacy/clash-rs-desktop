@@ -50,7 +50,7 @@ Choclite 是基于 [clash-rs](https://github.com/Watfaq/clash-rs) 的桌面客�
 
 ### Windows
 
-下载并运行 `Choclite_<版本>_x64-setup.exe`。
+从 [Releases 页面](https://github.com/Watfaq-legacy/clash-rs-desktop/releases)下载 `Choclite_<版本>_x64-setup.exe` 并运行。
 
 - 仅为当前用户安装，**不需要管理员权限**。
 - 依赖 Microsoft Edge WebView2。Windows 10 较新版本和 Windows 11 已经自带；如果缺失，安装程序会自动安装。
@@ -59,7 +59,7 @@ Choclite 是基于 [clash-rs](https://github.com/Watfaq/clash-rs) 的桌面客�
 
 ### Linux
 
-安装 `.deb` 包，或者直接运行 AppImage。
+从 [Releases 页面](https://github.com/Watfaq-legacy/clash-rs-desktop/releases)下载 `.deb` 包或 AppImage。
 
 - 系统代理模式通过 `gsettings` 配置兼容 GNOME 的桌面环境（GNOME、Cinnamon、Budgie、Pantheon）。
 - 开启增强模式时，经过一次 `pkexec` 密码验证后，会安装一个 systemd 服务（`choclite.service`）。卸载 `.deb` 包时会一并移除。
