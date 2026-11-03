@@ -4,6 +4,7 @@
   import { cubicOut } from "svelte/easing";
   import { api } from "$lib/api";
   import Icon from "$lib/components/Icon.svelte";
+  import Pane from "$lib/components/Pane.svelte";
   import Sheet from "$lib/components/Sheet.svelte";
   import Rules from "$lib/screens/Rules.svelte";
   import Bypass from "$lib/screens/Bypass.svelte";
@@ -15,7 +16,7 @@
   import Onboarding from "$lib/screens/Onboarding.svelte";
   import Profiles from "$lib/screens/Profiles.svelte";
   import Settings from "$lib/screens/Settings.svelte";
-  import { app } from "$lib/store.svelte";
+  import { app, type Screen } from "$lib/store.svelte";
   import { isEnglish, t } from "$lib/i18n.svelte";
 
   $effect(() => {
@@ -36,6 +37,40 @@
   });
 
   const onboarding = $derived(app.view !== null && app.view.profiles.length === 0);
+
+  // Past this width home and the current page sit side by side.
+  let windowWidth = $state(window.innerWidth);
+  const wide = $derived(windowWidth >= 760);
+  const sideScreen = $derived<Screen>(app.screen === "home" ? "settings" : app.screen);
+
+  function onKeydown(event: KeyboardEvent) {
+    if (event.defaultPrevented || app.view === null || onboarding) return;
+    const ctrl = event.ctrlKey || event.metaKey;
+    if (event.key === "Escape") {
+      // Sheets and the toast close themselves first.
+      if (app.view.needsInstall || app.pendingImport) return;
+      const home = wide ? sideScreen === "settings" : app.screen === "home";
+      if (!home) {
+        event.preventDefault();
+        app.back();
+      }
+    } else if (ctrl && event.key === ",") {
+      event.preventDefault();
+      app.go("settings");
+    } else if (ctrl && event.key.toLowerCase() === "l") {
+      event.preventDefault();
+      app.go("logs");
+    }
+  }
+
+  // The webview's own menu (Back, Reload, Inspect…) makes no sense here; keep
+  // the native Copy/Paste menu only on text fields and selected text.
+  function onContextMenu(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const editable = target.closest("input, textarea, [contenteditable]");
+    const selected = (window.getSelection()?.toString() ?? "") !== "";
+    if (!editable && !selected) event.preventDefault();
+  }
   const isWindows = navigator.userAgent.includes("Windows");
 
   let installing = $state(false);
@@ -63,37 +98,61 @@
     fly(node, { x: app.forward ? 40 : -40, duration: 260, easing: cubicOut, opacity: 0 });
 </script>
 
+<svelte:window bind:innerWidth={windowWidth} onkeydown={onKeydown} oncontextmenu={onContextMenu} />
+
 <div class="app">
   <div class="glow" class:on={app.view?.phase === "connected"}></div>
 
+  {#snippet screenView(screen: Screen)}
+    {#if screen === "nodes"}
+      <Nodes />
+    {:else if screen === "settings"}
+      <Settings />
+    {:else if screen === "profiles"}
+      <Profiles />
+    {:else if screen === "add"}
+      <Onboarding onBack={() => app.back()} />
+    {:else if screen === "diagnose"}
+      <Diagnose />
+    {:else if screen === "bypass"}
+      <Bypass />
+    {:else if screen === "rules"}
+      <Rules />
+    {:else if screen === "advanced"}
+      <Advanced />
+    {:else if screen === "logs"}
+      <Logs />
+    {:else}
+      <Home />
+    {/if}
+  {/snippet}
+
   {#if app.view}
-    {#key onboarding ? "welcome" : app.screen}
-      <div class="page" in:slide>
-        {#if onboarding}
-          <Onboarding />
-        {:else if app.screen === "nodes"}
-          <Nodes />
-        {:else if app.screen === "settings"}
-          <Settings />
-        {:else if app.screen === "profiles"}
-          <Profiles />
-        {:else if app.screen === "add"}
-          <Onboarding onBack={() => app.back()} />
-        {:else if app.screen === "diagnose"}
-          <Diagnose />
-        {:else if app.screen === "bypass"}
-          <Bypass />
-        {:else if app.screen === "rules"}
-          <Rules />
-        {:else if app.screen === "advanced"}
-          <Advanced />
-        {:else if app.screen === "logs"}
-          <Logs />
-        {:else}
-          <Home />
-        {/if}
+    {#if onboarding}
+      <div class="page welcome" in:slide>
+        <Onboarding />
       </div>
-    {/key}
+    {:else if wide}
+      <!-- Wide window: home stays on the left, everything else opens on the right. -->
+      <div class="split">
+        <div class="main-pane">
+          <Pane kind="main"><Home /></Pane>
+        </div>
+        <div class="side-pane">
+          {#key sideScreen}
+            <div class="page" in:slide>
+              <Pane kind="side">{@render screenView(sideScreen)}</Pane>
+            </div>
+          {/key}
+        </div>
+      </div>
+    {:else}
+      {#key app.screen}
+        <div class="page" in:slide>
+          {@render screenView(app.screen)}
+        </div>
+      {/key}
+    {/if}
   {/if}
 
   {#if app.view?.needsInstall}
@@ -189,6 +248,33 @@
   .page {
     position: absolute;
     inset: 0;
+  }
+  /* First run on a wide window: keep the form at a readable width. */
+  .welcome {
+    max-width: 460px;
+    margin: 0 auto;
+  }
+  .split {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    grid-template-columns: 400px 1fr;
+  }
+  .main-pane,
+  .side-pane {
+    position: relative;
+    overflow: hidden;
+  }
+  .side-pane {
+    border-left: 1px solid var(--line);
+    background: color-mix(in srgb, var(--surface) 35%, transparent);
+  }
+  /* Forms and lists stay at a readable width; logs and the YAML editor
+     don't use .scroll and keep the full width. */
+  .side-pane :global(.scroll > *) {
+    max-width: 640px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .link {

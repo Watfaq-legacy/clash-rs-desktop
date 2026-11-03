@@ -7,8 +7,15 @@ use clash_rs_desktop_core::{AppPaths, Engine};
 use tauri::{AppHandle, Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
 use crate::state::AppState;
+
+/// Window size and position survive restarts. Visibility is ours to decide
+/// (start in the tray), and the window never has native decorations.
+const WINDOW_STATE: StateFlags = StateFlags::SIZE
+    .union(StateFlags::POSITION)
+    .union(StateFlags::MAXIMIZED);
 
 /// Passed by the autostart entry so a login launch stays in the tray.
 const AUTOSTART_FLAG: &str = "--autostart";
@@ -30,6 +37,11 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(WINDOW_STATE)
+                .build(),
+        )
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
             let engine = Engine::load(AppPaths::from_program_data(data_dir))?;
@@ -82,6 +94,7 @@ pub fn run() {
             // Closing the window keeps the connection alive in the tray.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                let _ = window.app_handle().save_window_state(WINDOW_STATE);
                 let _ = window.hide();
             }
         })
@@ -167,6 +180,7 @@ fn quit_app(app: AppHandle) {
 
 /// Disconnect (restoring the OS proxy, stopping TUN) and exit.
 pub fn quit(app: &AppHandle) {
+    let _ = app.save_window_state(WINDOW_STATE);
     restore_network(app);
     app.exit(0);
 }

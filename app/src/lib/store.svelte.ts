@@ -86,8 +86,13 @@ class AppStore {
     this.screen = screen;
   }
 
+  /** Where `back()` would go from the current screen. */
+  get backTarget(): Screen {
+    return this.#cameFrom.get(this.screen) ?? PARENT[this.screen];
+  }
+
   back(to?: Screen) {
-    const target = to ?? this.#cameFrom.get(this.screen) ?? PARENT[this.screen];
+    const target = to ?? this.backTarget;
     this.forward = false;
     this.screen = target;
   }
