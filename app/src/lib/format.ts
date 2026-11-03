@@ -1,4 +1,6 @@
-const UNITS = ["B", "KB", "MB", "GB", "TB"];
+import { t } from "./i18n.svelte";
+
+const UNITS =["B", "KB", "MB", "GB", "TB"];
 
 export function bytes(value: number, digits = 1): string {
   let n = Math.max(0, value);
@@ -32,12 +34,26 @@ export function daysLeft(unixSeconds: number): number {
   return Math.ceil((unixSeconds * 1000 - Date.now()) / 86_400_000);
 }
 
+/** Subscription expiry label from `daysLeft`. */
+export function expiryText(days: number): string {
+  if (days < 0) return t("已到期", "Expired");
+  if (days === 0) return t("今天到期", "Expires today");
+  return t(`剩余 ${days} 天`, `${days} day${days === 1 ? "" : "s"} left`);
+}
+
 export function relative(unixSeconds: number): string {
   const diff = Math.floor(Date.now() / 1000 - unixSeconds);
-  if (diff < 60) return "刚刚";
-  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
-  return `${Math.floor(diff / 86400)} 天前`;
+  if (diff < 60) return t("刚刚", "Just now");
+  if (diff < 3600) {
+    const n = Math.floor(diff / 60);
+    return t(`${n} 分钟前`, `${n} min ago`);
+  }
+  if (diff < 86400) {
+    const n = Math.floor(diff / 3600);
+    return t(`${n} 小时前`, `${n} hr ago`);
+  }
+  const n = Math.floor(diff / 86400);
+  return t(`${n} 天前`, `${n} day${n === 1 ? "" : "s"} ago`);
 }
 
 export type DelayTone = "good" | "ok" | "bad" | "none";

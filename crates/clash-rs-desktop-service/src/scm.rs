@@ -17,7 +17,7 @@ use windows_service::{
     service_manager::{ServiceManager, ServiceManagerAccess},
 };
 
-const DESCRIPTION: &str = "Runs the Choclite network core for 增强模式 (TUN).";
+const DESCRIPTION: &str = "Runs the Choclite network core for Enhanced Mode (TUN).";
 const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
 const ERROR_SERVICE_EXISTS: i32 = 1073;
 

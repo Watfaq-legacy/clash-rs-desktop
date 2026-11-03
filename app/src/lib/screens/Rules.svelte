@@ -3,6 +3,7 @@
   import Icon from "$lib/components/Icon.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
+  import { isEnglish, t } from "$lib/i18n.svelte";
   import { app } from "$lib/store.svelte";
 
   const rules = $derived(app.view?.customRules ?? []);
@@ -11,18 +12,22 @@
   let action = $state<RuleAction>("proxy");
   let busy = $state(false);
 
-  const ACTIONS: { value: RuleAction; label: string }[] = [
-    { value: "proxy", label: "走代理" },
-    { value: "direct", label: "直连" },
-    { value: "reject", label: "拦截" },
-  ];
-  const ACTION_LABEL: Record<RuleAction, string> = { proxy: "代理", direct: "直连", reject: "拦截" };
-  const KIND_LABEL: Record<RuleKind, string> = {
-    "domain-suffix": "网站",
-    "domain-keyword": "关键词",
+  const ACTIONS: { value: RuleAction; label: string }[] = $derived([
+    { value: "proxy", label: t("走代理", "Proxy") },
+    { value: "direct", label: t("直连", "Direct") },
+    { value: "reject", label: t("拦截", "Block") },
+  ]);
+  const ACTION_LABEL: Record<RuleAction, string> = $derived({
+    proxy: t("代理", "Proxy"),
+    direct: t("直连", "Direct"),
+    reject: t("拦截", "Block"),
+  });
+  const KIND_LABEL: Record<RuleKind, string> = $derived({
+    "domain-suffix": t("网站", "Site"),
+    "domain-keyword": t("关键词", "Keyword"),
     "ip-cidr": "IP",
-    "process-name": "程序",
-  };
+    "process-name": t("程序", "App"),
+  });
 
   /** Guess what the user typed, so they never have to pick a rule type. */
   function kindOf(input: string): RuleKind {
@@ -43,7 +48,7 @@
     busy = false;
     if (result) {
       value = "";
-      app.showToast(result.phase === "connected" ? "规则已生效" : "规则已保存");
+      app.showToast(result.phase === "connected" ? t("规则已生效", "Rule applied") : t("规则已保存", "Rule saved"));
     }
   }
 
@@ -55,18 +60,18 @@
   }
 
   const describe = (rule: CustomRule) =>
-    rule.kind === "domain-keyword" ? `包含「${rule.value}」` : rule.value;
+    rule.kind === "domain-keyword" ? t(`包含「${rule.value}」`, `Contains "${rule.value}"`) : rule.value;
 </script>
 
 <div class="screen">
-  <TitleBar title="网站规则" onBack={() => app.back()} />
+  <TitleBar title={t("网站规则", "Site rules")} onBack={() => app.back()} />
 
   <div class="scroll">
     <form class="card" onsubmit={add}>
       <label class="field">
         <input
           bind:value
-          placeholder="网址、域名、IP 或程序名"
+          placeholder={t("网址、域名、IP 或程序名", "URL, domain, IP, or app name")}
           spellcheck="false"
           autocomplete="off"
           disabled={busy}
@@ -75,12 +80,17 @@
       </label>
       <Segmented options={ACTIONS} value={action} onchange={(next) => (action = next)} />
       <button class="primary" type="submit" disabled={!value.trim() || busy}>
-        <Icon name="plus" size={16} /> 添加规则
+        <Icon name="plus" size={16} /> {t("添加规则", "Add rule")}
       </button>
     </form>
     <p class="hint">
-      例如 <code>example.com</code>（含所有子域名）、<code>192.168.1.0/24</code>、<code>Telegram.exe</code>。
-      这里的规则优先于订阅规则，订阅更新后依然保留。
+      {#if isEnglish()}
+        For example <code>example.com</code> (includes all subdomains), <code>192.168.1.0/24</code>, or
+        <code>Telegram.exe</code>. These rules take priority over subscription rules and are kept when it updates.
+      {:else}
+        例如 <code>example.com</code>（含所有子域名）、<code>192.168.1.0/24</code>、<code>Telegram.exe</code>。
+        这里的规则优先于订阅规则，订阅更新后依然保留。
+      {/if}
     </p>
 
     {#if rules.length}
@@ -90,14 +100,14 @@
             <span class="tag">{KIND_LABEL[rule.kind]}</span>
             <span class="value">{describe(rule)}</span>
             <span class="action {rule.action}">{ACTION_LABEL[rule.action]}</span>
-            <button class="del" onclick={() => remove(index)} disabled={busy} aria-label="删除">
+            <button class="del" onclick={() => remove(index)} disabled={busy} aria-label={t("删除", "Delete")}>
               <Icon name="trash" size={15} />
             </button>
           </div>
         {/each}
       </div>
     {:else}
-      <p class="empty">还没有自定义规则</p>
+      <p class="empty">{t("还没有自定义规则", "No custom rules yet")}</p>
     {/if}
   </div>
 </div>

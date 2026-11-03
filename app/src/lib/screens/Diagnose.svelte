@@ -3,20 +3,21 @@
   import { api, type Finding, type Fix } from "$lib/api";
   import Icon from "$lib/components/Icon.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
+  import { t } from "$lib/i18n.svelte";
   import { app } from "$lib/store.svelte";
 
   let findings = $state<Finding[] | null>(null);
   let running = $state(false);
   let fixing = $state<Fix | null>(null);
 
-  const FIX_LABEL: Record<Fix, string> = {
-    reconnect: "重新连接",
-    "reapply-system-proxy": "恢复代理设置",
-    "restore-system-proxy": "关闭失效的代理",
-    "flush-dns": "清理 DNS 缓存",
-    "enable-tun": "开启增强模式",
-    "enable-tun-ipv6": "一键开启 IPv6 接管",
-  };
+  const FIX_LABEL: Record<Fix, string> = $derived({
+    reconnect: t("重新连接", "Reconnect"),
+    "reapply-system-proxy": t("恢复代理设置", "Restore proxy settings"),
+    "restore-system-proxy": t("关闭失效的代理", "Turn off broken proxy"),
+    "flush-dns": t("清理 DNS 缓存", "Flush DNS cache"),
+    "enable-tun": t("开启增强模式", "Turn on Enhanced Mode"),
+    "enable-tun-ipv6": t("一键开启 IPv6 接管", "Route IPv6 too"),
+  });
 
   async function run() {
     running = true;
@@ -29,7 +30,7 @@
     const ok = await app.run(() => api.applyFix(kind));
     fixing = null;
     if (ok) {
-      app.showToast("已修复，正在重新检测");
+      app.showToast(t("已修复，正在重新检测", "Fixed. Checking again…"));
       await run();
     }
   }
@@ -42,26 +43,34 @@
     if (!findings) return null;
     const errors = findings.filter((f) => f.level === "error").length;
     const warns = findings.filter((f) => f.level === "warn").length;
-    if (errors) return { tone: "error", text: `发现 ${errors} 个问题` };
-    if (warns) return { tone: "warn", text: `有 ${warns} 项需要注意` };
-    return { tone: "ok", text: "一切正常" };
+    if (errors)
+      return {
+        tone: "error",
+        text: t(`发现 ${errors} 个问题`, `Found ${errors} problem${errors === 1 ? "" : "s"}`),
+      };
+    if (warns)
+      return {
+        tone: "warn",
+        text: t(`有 ${warns} 项需要注意`, `${warns} item${warns === 1 ? " needs" : "s need"} attention`),
+      };
+    return { tone: "ok", text: t("一切正常", "All good") };
   });
 </script>
 
 <div class="screen">
-  <TitleBar title="网络诊断" onBack={() => app.back()} />
+  <TitleBar title={t("网络诊断", "Diagnostics")} onBack={() => app.back()} />
 
   <div class="scroll">
     <div class="head">
       {#if running}
         <span class="pulse"></span>
-        <span class="head-text">正在检查网络、路由和 DNS…</span>
+        <span class="head-text">{t("正在检查网络、路由和 DNS…", "Checking network, routing, and DNS…")}</span>
       {:else if summary}
         <span class="badge {summary.tone}">
           <Icon name={summary.tone === "ok" ? "check" : "alert"} size={16} stroke={2.4} />
         </span>
         <span class="head-text">{summary.text}</span>
-        <button class="again" onclick={run}>重新检测</button>
+        <button class="again" onclick={run}>{t("重新检测", "Check again")}</button>
       {/if}
     </div>
 
@@ -75,14 +84,19 @@
               <p>{finding.detail}</p>
               {#if finding.fix}
                 <button class="fix" onclick={() => fix(finding.fix!)} disabled={!!fixing}>
-                  {fixing === finding.fix ? "正在处理…" : FIX_LABEL[finding.fix]}
+                  {fixing === finding.fix ? t("正在处理…", "Working…") : FIX_LABEL[finding.fix]}
                 </button>
               {/if}
             </div>
           </article>
         {/each}
       </div>
-      <p class="foot">诊断只读取网络状态，不会改动任何设置；只有点击修复按钮才会执行操作。</p>
+      <p class="foot">
+        {t(
+          "诊断只读取网络状态，不会改动任何设置；只有点击修复按钮才会执行操作。",
+          "Diagnostics only read network state and change nothing. Actions run only when you tap a fix button.",
+        )}
+      </p>
     {/if}
   </div>
 </div>

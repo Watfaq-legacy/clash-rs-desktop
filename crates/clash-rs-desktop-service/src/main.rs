@@ -17,6 +17,9 @@ mod linux;
 mod scm;
 
 fn main() -> std::process::ExitCode {
+    // Config errors from here reach the app's UI; this process has no user
+    // settings, so follow the machine's display language.
+    clash_rs_desktop_core::i18n::set_language(clash_rs_desktop_core::Language::System);
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().any(|arg| arg == name);
     let core = args

@@ -2,6 +2,7 @@
   import { api } from "$lib/api";
   import Icon from "$lib/components/Icon.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
+  import { isEnglish, t } from "$lib/i18n.svelte";
   import { app } from "$lib/store.svelte";
 
   const entries = $derived(app.view?.bypass ?? []);
@@ -22,30 +23,33 @@
     if (!text || busy) return;
     // Allow pasting several at once, separated by spaces, commas or lines.
     const items = text.split(/[\s,，;；]+/).filter(Boolean);
-    if (await save([...items, ...entries], "已添加")) value = "";
+    if (await save([...items, ...entries], t("已添加", "Added"))) value = "";
   }
 </script>
 
 <div class="screen">
-  <TitleBar title="不走代理的地址" onBack={() => app.back()} />
+  <TitleBar title={t("不走代理的地址", "Bypass list")} onBack={() => app.back()} />
 
   <div class="scroll">
     <p class="intro">
-      这些地址始终直接连接，不经过代理。适合公司内网、家里的 NAS、路由器管理页，或者需要用真实 IP 访问的网站。
+      {t(
+        "这些地址始终直接连接，不经过代理。适合公司内网、家里的 NAS、路由器管理页，或者需要用真实 IP 访问的网站。",
+        "These addresses always connect directly, never through the proxy. Useful for office intranets, a home NAS, router admin pages, or sites that need your real IP.",
+      )}
     </p>
 
     <form class="card" onsubmit={add}>
       <label class="field">
         <input
           bind:value
-          placeholder="域名或 IP 段，例如 nas.example.com"
+          placeholder={t("域名或 IP 段，例如 nas.example.com", "Domain or IP range, e.g. nas.example.com")}
           spellcheck="false"
           autocomplete="off"
           disabled={busy}
         />
       </label>
       <button class="primary" type="submit" disabled={!value.trim() || busy}>
-        <Icon name="plus" size={16} /> 添加
+        <Icon name="plus" size={16} /> {t("添加", "Add")}
       </button>
     </form>
 
@@ -58,7 +62,7 @@
               class="del"
               onclick={() => save(entries.filter((e) => e !== entry))}
               disabled={busy}
-              aria-label="删除"
+              aria-label={t("删除", "Delete")}
             >
               <Icon name="trash" size={15} />
             </button>
@@ -68,13 +72,25 @@
     {/if}
 
     <div class="auto">
-      <h3>已自动处理</h3>
-      <ul>
-        <li>局域网地址（192.168.x.x、10.x.x.x 等）和 Tailscale 网段</li>
-        <li><code>.lan</code>、<code>.local</code>、<code>.home.arpa</code> 等内网域名</li>
-        <li>电脑网络设置里的 DNS 后缀（公司网络、VPN 通常会自动设置）</li>
-      </ul>
-      <p>增强模式下，这些域名会交给电脑原本的 DNS 解析，内网名字照常能打开。填一个域名会同时包含它的所有子域名。</p>
+      <h3>{t("已自动处理", "Handled automatically")}</h3>
+      {#if isEnglish()}
+        <ul>
+          <li>LAN addresses (192.168.x.x, 10.x.x.x, etc.) and Tailscale ranges</li>
+          <li>Local domains such as <code>.lan</code>, <code>.local</code>, and <code>.home.arpa</code></li>
+          <li>DNS suffixes from your network settings (usually set by office networks or VPNs)</li>
+        </ul>
+        <p>
+          In Enhanced Mode, these domains are resolved by your computer's own DNS, so local names keep working. A
+          domain also covers all its subdomains.
+        </p>
+      {:else}
+        <ul>
+          <li>局域网地址（192.168.x.x、10.x.x.x 等）和 Tailscale 网段</li>
+          <li><code>.lan</code>、<code>.local</code>、<code>.home.arpa</code> 等内网域名</li>
+          <li>电脑网络设置里的 DNS 后缀（公司网络、VPN 通常会自动设置）</li>
+        </ul>
+        <p>增强模式下，这些域名会交给电脑原本的 DNS 解析，内网名字照常能打开。填一个域名会同时包含它的所有子域名。</p>
+      {/if}
     </div>
   </div>
 </div>

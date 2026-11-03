@@ -11,6 +11,7 @@ use serde_yaml::{Mapping, Value};
 
 use crate::{
     config_layers::RuntimeConfigBuilder,
+    i18n::t,
     network::{LOCAL_CIDRS, LocalNetwork},
 };
 
@@ -69,17 +70,22 @@ impl CustomRule {
                 .trim_matches('.')
                 .to_ascii_lowercase();
         }
-        anyhow::ensure!(!value.is_empty(), "请输入内容");
+        anyhow::ensure!(!value.is_empty(), "{}", t("请输入内容", "Enter a value"));
         anyhow::ensure!(
             !value.contains([',', '\n', '\r']) && !value.contains(char::is_whitespace),
-            "不能包含逗号或空格"
+            "{}",
+            t("不能包含逗号或空格", "Can't contain commas or spaces")
         );
         if kind == RuleKind::IpCidr {
             let (ip, prefix) = value.split_once('/').unwrap_or((&value, ""));
             anyhow::ensure!(
                 ip.parse::<std::net::IpAddr>().is_ok()
                     && (prefix.is_empty() || prefix.parse::<u8>().is_ok()),
-                "IP 段格式应类似 10.0.0.0/8"
+                "{}",
+                t(
+                    "IP 段格式应类似 10.0.0.0/8",
+                    "IP ranges should look like 10.0.0.0/8"
+                )
             );
             if prefix.is_empty() {
                 value = if ip.contains(':') {

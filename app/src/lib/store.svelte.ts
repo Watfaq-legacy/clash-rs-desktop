@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { api, errorText, type DeepLinkImport, type Traffic, type View } from "./api";
+import { setEnglish } from "./i18n.svelte";
 
 export type Screen =
   | "home"
@@ -47,6 +48,7 @@ class AppStore {
     await listen<View>("view", (event) => {
       const previous = this.view?.phase;
       this.view = event.payload;
+      setEnglish(event.payload.english);
       if (event.payload.phase !== "connected") this.traffic = { up: 0, down: 0 };
       if (event.payload.error && previous !== event.payload.phase) {
         this.showToast(event.payload.error, "error");
@@ -57,6 +59,7 @@ class AppStore {
     });
     await listen<DeepLinkImport>("deep-link-import", () => this.#takeImport());
     this.view = await api.getView();
+    setEnglish(this.view.english);
     await this.#takeImport();
   }
 

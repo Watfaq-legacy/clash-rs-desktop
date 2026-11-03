@@ -4,6 +4,7 @@ pub mod diagnose;
 pub mod elevate;
 pub mod engine;
 pub mod generate;
+pub mod i18n;
 pub mod ipc;
 pub mod leak;
 pub mod links;
@@ -34,6 +35,7 @@ pub use profile::{
     FetchedSubscription, ProfileId, ProfileManifest, ProfileSource, ProfileStore, SubscriptionInfo,
     UserProfile, default_profile_yaml, fetch_subscription,
 };
+pub use i18n::{Language, t};
 pub use settings::{AppSettings, ConnectMode, RoutingMode, SettingsStore, SystemProxySettings};
 pub use system_proxy::{
     PlatformSystemProxy, SystemProxyBackend, SystemProxySnapshot, SystemProxyTarget,

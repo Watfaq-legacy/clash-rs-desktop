@@ -6,6 +6,7 @@
   import Sheet from "$lib/components/Sheet.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import * as fmt from "$lib/format";
+  import { isEnglish, t } from "$lib/i18n.svelte";
   import { app } from "$lib/store.svelte";
 
   const view = $derived(app.view!);
@@ -31,25 +32,41 @@
       nodes = null;
       return;
     }
-    const load = () => api.getNodes().then((n) => (nodes = n)).catch(() => {});
+    // Right after connecting the controller may not answer yet; retry
+    // quickly until the first list arrives instead of waiting a full period.
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = (attempt = 0) =>
+      api
+        .getNodes()
+        .then((n) => (nodes = n))
+        .catch(() => {})
+        .finally(() => {
+          if (!nodes?.selected && attempt < 10) retry = setTimeout(() => load(attempt + 1), 1000);
+        });
     load();
     const timer = setInterval(load, 15_000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      clearTimeout(retry);
+    };
   });
 
   const status = $derived.by(() => {
     switch (phase) {
       case "connecting":
-        return { title: "正在连接", sub: view.step ?? "马上就好…" };
+        return { title: t("正在连接", "Connecting"), sub: view.step ?? t("马上就好…", "Almost there…") };
       case "disconnecting":
-        return { title: "正在断开", sub: "正在恢复网络设置…" };
+        return {
+          title: t("正在断开", "Disconnecting"),
+          sub: t("正在恢复网络设置…", "Restoring network settings…"),
+        };
       case "connected":
         return {
-          title: "已连接",
+          title: t("已连接", "Connected"),
           sub: view.connectedSince ? fmt.duration(now - view.connectedSince) : "",
         };
       default:
-        return { title: "未连接", sub: "点击按钮开始使用" };
+        return { title: t("未连接", "Disconnected"), sub: t("点击按钮开始使用", "Tap the button to connect") };
     }
   });
 
@@ -74,7 +91,7 @@
     const expire = profile?.subscription?.expire;
     if (!expire) return null;
     const days = fmt.daysLeft(expire);
-    return { days, text: days < 0 ? "已到期" : days === 0 ? "今天到期" : `剩余 ${days} 天` };
+    return { days, text: fmt.expiryText(days) };
   });
 
   async function toggle() {
@@ -109,7 +126,7 @@
     });
     leakBusy = false;
     leakSheet = false;
-    app.showToast("以后不会再提示这些程序");
+    app.showToast(t("以后不会再提示这些程序", "You won't be reminded about these apps again"));
   }
 </script>
 
@@ -122,7 +139,9 @@
         <h1>{status.title}</h1>
         <p class="num">
           {#if phase === "connected" && view.connectedMode === "tun"}
-            <span class="chip" title="所有程序的流量都经过 Choclite">增强模式</span>
+            <span class="chip" title={t("所有程序的流量都经过 Choclite", "All app traffic goes through Choclite")}>
+              {t("增强模式", "Enhanced Mode")}
+            </span>
           {/if}
           {status.sub}
         </p>
@@ -141,13 +160,16 @@
       {#if phase === "connected" && view.healthIssue}
         <button class="notice issue" onclick={() => app.go("diagnose")} in:fly={{ y: 8, duration: 400 }}>
           <span class="dot"></span>
-          <span class="notice-text">{view.healthIssue}，点此诊断</span>
+          <span class="notice-text">{t(`${view.healthIssue}，点此诊断`, `${view.healthIssue}. Tap to diagnose`)}</span>
           <span class="chev"><Icon name="chevron" size={14} /></span>
         </button>
       {:else if showLeaks}
         <button class="notice" onclick={() => (leakSheet = true)} in:fly={{ y: 8, duration: 400 }}>
           <span class="dot"></span>
-          <span class="notice-text">{view.leaks.length} 个程序未经过代理</span>
+          <span class="notice-text">{t(
+            `${view.leaks.length} 个程序未经过代理`,
+            `${view.leaks.length} app${view.leaks.length === 1 ? " is" : "s are"} bypassing the proxy`,
+          )}</span>
           <span class="chev"><Icon name="chevron" size={14} /></span>
         </button>
       {/if}
@@ -156,9 +178,9 @@
       <button class="card" onclick={() => app.go("settings")}>
         <span class="badge"><Icon name="globe" size={17} /></span>
         <span class="body">
-          <span class="label">分流模式</span>
-          <span class="value">全部直连</span>
-          <span class="meta">不经过代理节点，可在设置中更改</span>
+          <span class="label">{t("分流模式", "Routing mode")}</span>
+          <span class="value">{t("全部直连", "Direct all")}</span>
+          <span class="meta">{t("不经过代理节点，可在设置中更改", "No traffic uses a server. Change in Settings")}</span>
         </span>
         <span class="chev"><Icon name="chevron" size={16} /></span>
       </button>
@@ -167,18 +189,18 @@
         class="card"
         onclick={() => app.go("nodes")}
         disabled={phase !== "connected"}
-        title={phase === "connected" ? "" : "连接后可以切换节点"}
+        title={phase === "connected" ? "" : t("连接后可以切换节点", "Connect to switch servers")}
       >
         <span class="badge"><Icon name={selectedNode?.auto ? "bolt" : "globe"} size={17} /></span>
         <span class="body">
-          <span class="label">{selectedNode?.auto ? "自动选择" : "当前节点"}</span>
+          <span class="label">{selectedNode?.auto ? t("自动选择", "Auto select") : t("当前节点", "Server")}</span>
           <span class="value">
             {#if selectedNode}
               {selectedNode.name}
             {:else if phase === "connected"}
               …
             {:else}
-              连接后自动选择最佳节点
+              {t("连接后显示当前节点", "Shown after connecting")}
             {/if}
           </span>
         </span>
@@ -192,10 +214,10 @@
       <button class="card" onclick={() => app.go("profiles")}>
         <span class="badge"><Icon name="layers" size={17} /></span>
         <span class="body">
-          <span class="label">订阅</span>
+          <span class="label">{t("订阅", "Subscription")}</span>
           <span class="value">
-            {profile?.name ?? "未选择"}
-            {#if mergedCount}<span class="merged">+ {mergedCount} 个合并订阅</span>{/if}
+            {profile?.name ?? t("未选择", "None selected")}
+            {#if mergedCount}<span class="merged">{t(`+ ${mergedCount} 个合并订阅`, `+ ${mergedCount} merged`)}</span>{/if}
           </span>
           {#if usage}
             <span class="meter"><span style="width: {usage.ratio * 100}%"></span></span>
@@ -206,7 +228,7 @@
           {:else if expiry}
             <span class="meta" class:warn={expiry.days <= 7}>{expiry.text}</span>
           {:else if profile?.updatedAt}
-            <span class="meta">更新于 {fmt.relative(profile.updatedAt)}</span>
+            <span class="meta">{t(`更新于 ${fmt.relative(profile.updatedAt)}`, `Updated ${fmt.relative(profile.updatedAt)}`)}</span>
           {/if}
         </span>
         <span class="chev"><Icon name="chevron" size={16} /></span>
@@ -216,17 +238,29 @@
 </div>
 
 {#if leakSheet}
-  <Sheet title="这些程序没有经过代理" onclose={() => (leakSheet = false)}>
-    <p>它们会直接连接网络，不使用系统代理设置。常见的有游戏、启动器和命令行工具。</p>
+  <Sheet title={t("这些程序没有经过代理", "These apps bypass the proxy")} onclose={() => (leakSheet = false)}>
+    <p>
+      {t(
+        "它们会直接连接网络，不使用系统代理设置。常见的有游戏、启动器和命令行工具。",
+        "They connect directly and ignore the system proxy. Common examples are games, launchers, and command-line tools.",
+      )}
+    </p>
     <ul class="apps">
       {#each view.leaks as leak (leak)}
         <li>{leak.replace(/\.exe$/i, "")}</li>
       {/each}
     </ul>
-    <p>如果希望它们也经过代理，可以开启<b>增强模式</b>（需要一次管理员授权）。如果它们本来就不需要代理，忽略即可。</p>
+    {#if isEnglish()}
+      <p>
+        To route them through the proxy too, turn on <b>Enhanced Mode</b> (requires administrator
+        approval once). If they don't need the proxy, just ignore them.
+      </p>
+    {:else}
+      <p>如果希望它们也经过代理，可以开启<b>增强模式</b>（需要一次管理员授权）。如果它们本来就不需要代理，忽略即可。</p>
+    {/if}
     {#snippet actions()}
-      <button class="ghost" onclick={ignoreAll} disabled={leakBusy}>忽略这些程序</button>
-      <button class="primary" onclick={useTun} disabled={leakBusy}>开启增强模式</button>
+      <button class="ghost" onclick={ignoreAll} disabled={leakBusy}>{t("忽略这些程序", "Ignore these apps")}</button>
+      <button class="primary" onclick={useTun} disabled={leakBusy}>{t("开启增强模式", "Turn on Enhanced Mode")}</button>
     {/snippet}
   </Sheet>
 {/if}

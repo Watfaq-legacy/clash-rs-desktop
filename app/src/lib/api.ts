@@ -6,6 +6,7 @@ export type ConnectMode = "system-proxy" | "tun";
 export type NeedsInstall = "missing" | "outdated";
 export type RuleKind = "domain-suffix" | "domain-keyword" | "ip-cidr" | "process-name";
 export type RuleAction = "proxy" | "direct" | "reject";
+export type Language = "system" | "zh" | "en";
 
 export interface SubscriptionInfo {
   upload: number;
@@ -48,6 +49,8 @@ export interface View {
   leaks: string[];
   healthIssue: string | null;
   tunIpv6: boolean;
+  language: Language;
+  english: boolean;
   coreVersion: string | null;
   appVersion: string;
 }
@@ -115,6 +118,7 @@ export const api = {
   removeProfile: (id: string) => invoke<View>("remove_profile", { id }),
   setAutoUpdateSubscriptions: (enabled: boolean) =>
     invoke<View>("set_auto_update_subscriptions", { enabled }),
+  setLanguage: (language: Language) => invoke<View>("set_language", { language }),
   setRoutingMode: (mode: RoutingMode) => invoke<View>("set_routing_mode", { mode }),
   setAutoConnect: (enabled: boolean) => invoke<View>("set_auto_connect", { enabled }),
   addCustomRule: (kind: RuleKind, value: string, action: RuleAction) =>

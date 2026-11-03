@@ -35,6 +35,9 @@ pub struct AppSettings {
     /// differs between system-proxy and TUN mode).
     #[serde(default)]
     pub selections: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+    /// UI language; also used for the tray, notifications and diagnostics.
+    #[serde(default)]
+    pub language: crate::i18n::Language,
 }
 
 fn default_true() -> bool {
@@ -55,6 +58,7 @@ impl Default for AppSettings {
             ignored_leak_apps: Vec::new(),
             tun_ipv6: false,
             selections: Default::default(),
+            language: Default::default(),
         }
     }
 }

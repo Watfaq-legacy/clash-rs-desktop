@@ -7,10 +7,10 @@ Choclite is a desktop client for [clash-rs](https://github.com/Watfaq/clash-rs) 
 Available for **Windows** and **Linux**. On macOS, use the native Choclite app.
 
 <p align="center">
-  <img src="docs/images/home-light.png" width="240" alt="Home screen, connected">
-  <img src="docs/images/home-dark.png" width="240" alt="Home screen, dark theme">
-  <img src="docs/images/subscriptions.png" width="240" alt="Subscription management">
-  <img src="docs/images/diagnostics.png" width="240" alt="Network diagnostics">
+  <img src="docs/images/en/home-light.png" width="240" alt="Home screen, connected">
+  <img src="docs/images/en/home-dark.png" width="240" alt="Home screen, dark theme">
+  <img src="docs/images/en/subscriptions.png" width="240" alt="Subscription management">
+  <img src="docs/images/en/diagnostics.png" width="240" alt="Network diagnostics">
 </p>
 
 ## Features
@@ -20,6 +20,7 @@ Available for **Windows** and **Linux**. On macOS, use the native Choclite app.
 - Uses the system proxy out of the box. No administrator rights, no prompts.
 - The node you pick is remembered per subscription, across restarts and mode changes.
 - Subscriptions update automatically on the provider's schedule.
+- English and Simplified Chinese interface, following the system language by default.
 
 **Works with real-world networks**
 - LAN addresses, `.lan` / `.local` / `home.arpa` names and the network's own DNS suffixes (company networks, VPNs, Tailscale) always connect directly and are resolved by the system's DNS.

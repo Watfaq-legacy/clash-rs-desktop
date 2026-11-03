@@ -7,6 +7,8 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 
+use clash_rs_desktop_core::t;
+
 use crate::state::{Phase, View};
 
 const TRAY_ID: &str = "main";
@@ -14,13 +16,15 @@ const TRAY_ID: &str = "main";
 struct TrayItems {
     status: MenuItem<Wry>,
     toggle: MenuItem<Wry>,
+    show: MenuItem<Wry>,
+    quit: MenuItem<Wry>,
 }
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
-    let status = MenuItem::with_id(app, "status", "未连接", false, None::<&str>)?;
-    let toggle = MenuItem::with_id(app, "toggle", "连接", true, None::<&str>)?;
-    let show = MenuItem::with_id(app, "show", "打开主界面", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let status = MenuItem::with_id(app, "status", t("未连接", "Disconnected"), false, None::<&str>)?;
+    let toggle = MenuItem::with_id(app, "toggle", t("连接", "Connect"), true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", t("打开主界面", "Open Choclite"), true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", t("退出", "Quit"), true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
         &[
@@ -34,7 +38,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     )?;
 
     let builder = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip("Choclite · 未连接")
+        .tooltip(format!("Choclite · {}", t("未连接", "Disconnected")))
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -60,7 +64,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         });
     builder.icon(tray_icon(false)).build(app)?;
 
-    app.manage(TrayItems { status, toggle });
+    app.manage(TrayItems {
+        status,
+        toggle,
+        show,
+        quit,
+    });
     Ok(())
 }
 
@@ -69,14 +78,17 @@ pub fn refresh(app: &AppHandle, view: &View) {
         return;
     };
     let (status, toggle, toggle_enabled) = match view.phase {
-        Phase::Disconnected => ("未连接", "连接", true),
-        Phase::Connecting => ("正在连接…", "连接", false),
-        Phase::Connected => ("已连接", "断开连接", true),
-        Phase::Disconnecting => ("正在断开…", "断开连接", false),
+        Phase::Disconnected => (t("未连接", "Disconnected"), t("连接", "Connect"), true),
+        Phase::Connecting => (t("正在连接…", "Connecting…"), t("连接", "Connect"), false),
+        Phase::Connected => (t("已连接", "Connected"), t("断开连接", "Disconnect"), true),
+        Phase::Disconnecting => (t("正在断开…", "Disconnecting…"), t("断开连接", "Disconnect"), false),
     };
     let _ = items.status.set_text(status);
     let _ = items.toggle.set_text(toggle);
     let _ = items.toggle.set_enabled(toggle_enabled);
+    // The language can change at runtime.
+    let _ = items.show.set_text(t("打开主界面", "Open Choclite"));
+    let _ = items.quit.set_text(t("退出", "Quit"));
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(format!("Choclite · {status}")));
         // Colored when connected, grey otherwise — readable at a glance.

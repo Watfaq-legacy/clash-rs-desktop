@@ -23,6 +23,7 @@ use crate::{
     SettingsStore, SystemProxyBackend, SystemProxySnapshot,
     elevate::{Elevated, run_elevated},
     generate::{Bypass, ConfigInputs, generate},
+    i18n::t,
     leak::LeakDetector,
     network::LocalNetwork,
     service::{Request, Response, SERVICE_VERSION, ServiceClient},
@@ -45,8 +46,14 @@ pub enum NeedsServiceInstall {
 impl std::fmt::Display for NeedsServiceInstall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Missing => "增强模式需要先完成一次授权安装",
-            Self::Outdated => "增强模式组件需要更新",
+            Self::Missing => t(
+                "增强模式需要先完成一次授权安装",
+                "Enhanced Mode needs a one-time authorized install",
+            ),
+            Self::Outdated => t(
+                "增强模式组件需要更新",
+                "The Enhanced Mode component needs an update",
+            ),
         })
     }
 }
@@ -230,16 +237,25 @@ impl Engine {
             "{CORE_OVERRIDE_ENV} points at a missing file"
         );
 
-        on_step("首次使用，正在下载内核…");
+        on_step(t(
+            "首次使用，正在下载内核…",
+            "First run: downloading the core…",
+        ));
         let manager = CoreUpdateManager::new();
         let check = manager
             .check_latest(&self.settings.settings().updates, None)
             .await
-            .context("无法获取内核版本信息，请检查网络")?;
+            .context(t(
+                "无法获取内核版本信息，请检查网络",
+                "Couldn't get core version info. Check your network.",
+            ))?;
         manager
             .download_and_activate(&check.candidate, &ManagedCoreFiles::from_paths(&self.paths))
             .await
-            .context("内核下载失败，请检查网络")
+            .context(t(
+                "内核下载失败，请检查网络",
+                "Core download failed. Check your network.",
+            ))
     }
 
     pub fn core_version(&self) -> Option<String> {
@@ -251,7 +267,10 @@ impl Engine {
         let check = CoreUpdateManager::new()
             .check_latest(&self.settings.settings().updates, current.as_ref())
             .await
-            .context("无法获取内核版本信息，请检查网络")?;
+            .context(t(
+                "无法获取内核版本信息，请检查网络",
+                "Couldn't get core version info. Check your network.",
+            ))?;
         let latest = crate::binary_update::version_from_tag(&check.candidate.release_tag);
         Ok(CoreUpdateInfo {
             available: current.as_ref().is_none_or(|core| core.version != latest),
@@ -264,7 +283,11 @@ impl Engine {
     pub async fn update_core(&mut self) -> anyhow::Result<String> {
         anyhow::ensure!(
             std::env::var_os(CORE_OVERRIDE_ENV).is_none(),
-            "正在使用 {CORE_OVERRIDE_ENV} 指定的内核"
+            "{}",
+            crate::tr!(
+                "正在使用 {CORE_OVERRIDE_ENV} 指定的内核",
+                "Using the core set by {CORE_OVERRIDE_ENV}"
+            )
         );
         let settings = self.settings.settings().updates.clone();
         let manager = CoreUpdateManager::new();
@@ -272,7 +295,10 @@ impl Engine {
         let active = manager
             .download_and_activate(&check.candidate, &ManagedCoreFiles::from_paths(&self.paths))
             .await
-            .context("内核下载失败，请检查网络")?;
+            .context(t(
+                "内核下载失败，请检查网络",
+                "Core download failed. Check your network.",
+            ))?;
         // Keep the service's private copy in step, if it is installed.
         if self.service_version().await.is_some() {
             let _ = self
@@ -296,9 +322,13 @@ impl Engine {
         let profile = self
             .profiles
             .active_profile()
-            .ok_or_else(|| anyhow::anyhow!("还没有添加订阅"))?;
-        let subscription = read_yaml(&profile.source_path)?
-            .ok_or_else(|| anyhow::anyhow!("订阅文件丢失，请更新订阅"))?;
+            .ok_or_else(|| anyhow::anyhow!(t("还没有添加订阅", "No subscription added yet")))?;
+        let subscription = read_yaml(&profile.source_path)?.ok_or_else(|| {
+            anyhow::anyhow!(t(
+                "订阅文件丢失，请更新订阅",
+                "The subscription file is missing. Update the subscription."
+            ))
+        })?;
 
         let mut overrides = Vec::new();
         for path in [
@@ -308,7 +338,9 @@ impl Engine {
         .into_iter()
         .flatten()
         {
-            if let Some(layer) = read_yaml(&path).context("自定义配置格式有误")? {
+            if let Some(layer) =
+                read_yaml(&path).context(t("自定义配置格式有误", "Custom config is malformed"))?
+            {
                 overrides.push(layer);
             }
         }
@@ -318,9 +350,11 @@ impl Engine {
         for merged in self.profiles.merged_profiles() {
             match read_yaml(&merged.source_path) {
                 Ok(Some(config)) => extra_subscriptions.push((merged.name.clone(), config)),
-                _ => self
-                    .log
-                    .note(&format!("合并订阅「{}」时读取失败，已跳过", merged.name)),
+                _ => self.log.note(&crate::tr!(
+                    "合并订阅「{}」时读取失败，已跳过",
+                    "Couldn't read merged subscription \"{}\"; skipped",
+                    merged.name
+                )),
             }
         }
 
@@ -359,7 +393,11 @@ impl Engine {
         let check = self.local_launch(core, &staging);
         if let Err(error) = tokio::task::block_in_place(|| check.validate_config()) {
             let _ = fs::remove_file(&staging);
-            anyhow::bail!("配置有误，无法启动：{}", first_error_line(&error));
+            anyhow::bail!(crate::tr!(
+                "配置有误，无法启动：{}",
+                "Config error, can't start: {}",
+                first_error_line(&error)
+            ));
         }
         fs::rename(&staging, &path)?;
         Ok(path)
@@ -371,10 +409,14 @@ impl Engine {
         if self.is_connected() {
             return Ok(());
         }
-        anyhow::ensure!(self.profiles.active_profile().is_some(), "还没有添加订阅");
+        anyhow::ensure!(
+            self.profiles.active_profile().is_some(),
+            "{}",
+            t("还没有添加订阅", "No subscription added yet")
+        );
 
         let core = self.ensure_core(on_step).await?;
-        on_step("正在连接…");
+        on_step(t("正在连接…", "Connecting…"));
         let port = pick_port(self.settings.settings().system_proxy.target.port);
         // Capture the machine's DNS setup while it is still untouched.
         self.local = LocalNetwork::detect();
@@ -386,11 +428,14 @@ impl Engine {
                 self.mixed_port = Some(port);
                 self.restore_selections().await;
                 self.note(match mode {
-                    ConnectMode::SystemProxy => "已连接（系统代理）",
-                    ConnectMode::Tun => "已连接（增强模式）",
+                    ConnectMode::SystemProxy => t("已连接（系统代理）", "Connected (system proxy)"),
+                    ConnectMode::Tun => t("已连接（增强模式）", "Connected (Enhanced Mode)"),
                 });
             }
-            Err(error) => self.note(&format!("连接失败：{error}")),
+            Err(error) => self.note(&crate::tr!(
+                "连接失败：{error}",
+                "Connection failed: {error}"
+            )),
         }
         result
     }
@@ -406,7 +451,9 @@ impl Engine {
                 self.start_local(core, port, false).await?;
                 if let Err(error) = self.apply_system_proxy(port) {
                     let _ = self.disconnect().await;
-                    return Err(error.context("无法设置系统代理"));
+                    return Err(
+                        error.context(t("无法设置系统代理", "Couldn't set the system proxy"))
+                    );
                 }
                 let core_pid = match &mut self.backend {
                     Some(Backend::Local(process, _)) => match process.state() {
@@ -443,7 +490,10 @@ impl Engine {
                 .last_error()
                 .unwrap_or_else(|| error.to_string());
             let _ = process.stop();
-            anyhow::bail!("内核启动失败：{reason}");
+            anyhow::bail!(crate::tr!(
+                "内核启动失败：{reason}",
+                "The core failed to start: {reason}"
+            ));
         }
         if tun && let Err(reason) = process.log().wait_for_tun(Duration::from_secs(5)).await {
             let _ = process.stop();
@@ -451,7 +501,10 @@ impl Engine {
                 // Capabilities missing or not honoured: ask to authorise again.
                 return Err(NeedsServiceInstall::Missing.into());
             }
-            anyhow::bail!("增强模式启动失败：{reason}");
+            anyhow::bail!(crate::tr!(
+                "增强模式启动失败：{reason}",
+                "Enhanced Mode failed to start: {reason}"
+            ));
         }
         self.backend = Some(Backend::Local(process, tun));
         self.controller = Some(client);
@@ -478,7 +531,10 @@ impl Engine {
         self.running_config = Some(value);
         match self.service.send(&Request::Start { config }).await? {
             Response::Ok => {}
-            Response::Error { message } => anyhow::bail!("增强模式启动失败：{message}"),
+            Response::Error { message } => anyhow::bail!(crate::tr!(
+                "增强模式启动失败：{message}",
+                "Enhanced Mode failed to start: {message}"
+            )),
             other => anyhow::bail!("unexpected service response: {other:?}"),
         }
         self.backend = Some(Backend::Service);
@@ -519,7 +575,7 @@ impl Engine {
         self.mixed_port = None;
         self.leaks = None;
         if self.backend.is_some() {
-            self.note("已断开");
+            self.note(t("已断开", "Disconnected"));
         }
         match self.backend.take() {
             Some(Backend::Local(mut process, _)) => {
@@ -543,7 +599,9 @@ impl Engine {
         };
         match &self.backend {
             Some(Backend::Local(..)) => {
-                let core = self.installed_core().context("内核文件丢失")?;
+                let core = self
+                    .installed_core()
+                    .context(t("内核文件丢失", "The core file is missing"))?;
                 let tun = self.connected_mode() == Some(ConnectMode::Tun);
                 let config =
                     self.build_config(port, tun, Some(&local_controller_path(&self.paths)))?;
@@ -551,7 +609,10 @@ impl Engine {
                 self.write_local_config(&core, &config)?;
                 // `{}` = reload the startup config file we just replaced. A
                 // timeout surfaces as an error; the shell then reconnects.
-                let client = self.controller.clone().context("尚未连接")?;
+                let client = self
+                    .controller
+                    .clone()
+                    .context(t("尚未连接", "Not connected"))?;
                 tokio::time::timeout(
                     Duration::from_secs(10),
                     client.put_json::<_, serde_json::Value>(
@@ -560,7 +621,10 @@ impl Engine {
                     ),
                 )
                 .await
-                .context("内核重新加载配置超时")??;
+                .context(t(
+                    "内核重新加载配置超时",
+                    "The core timed out reloading the config",
+                ))??;
             }
             Some(Backend::Service) => {
                 let value = self.build_config(port, true, None)?;
@@ -569,7 +633,7 @@ impl Engine {
                 if let Response::Error { message } =
                     self.service.send(&Request::Reload { config }).await?
                 {
-                    anyhow::bail!("配置有误：{message}");
+                    anyhow::bail!(crate::tr!("配置有误：{message}", "Config error: {message}"));
                 }
             }
             None => {}
@@ -615,26 +679,29 @@ impl Engine {
         let reason = match self.backend.as_mut()? {
             Backend::Local(process, _) => match process.state() {
                 CoreState::Running { .. } => return None,
-                CoreState::Failed { message } => process
-                    .log()
-                    .last_error()
-                    .unwrap_or(format!("内核已退出（{message}）")),
+                CoreState::Failed { message } => process.log().last_error().unwrap_or(crate::tr!(
+                    "内核已退出（{message}）",
+                    "The core exited ({message})"
+                )),
                 _ => process
                     .log()
                     .last_error()
-                    .unwrap_or_else(|| "内核已退出".to_owned()),
+                    .unwrap_or_else(|| t("内核已退出", "The core exited").to_owned()),
             },
             Backend::Service => match self.service.send(&Request::Status).await {
                 Ok(Response::Status { status }) if status.running => return None,
-                Ok(Response::Status { status }) => {
-                    status.last_error.unwrap_or_else(|| "内核已退出".to_owned())
-                }
+                Ok(Response::Status { status }) => status
+                    .last_error
+                    .unwrap_or_else(|| t("内核已退出", "The core exited").to_owned()),
                 // The service itself is gone (stopped/uninstalled).
-                _ => "增强模式服务已停止".to_owned(),
+                _ => t("增强模式服务已停止", "The Enhanced Mode service stopped").to_owned(),
             },
         };
         let _ = self.disconnect().await;
-        Some(format!("连接意外断开：{reason}"))
+        Some(crate::tr!(
+            "连接意外断开：{reason}",
+            "Connection lost: {reason}"
+        ))
     }
 
     // ---- privileged install ----------------------------------------------------
@@ -644,8 +711,12 @@ impl Engine {
     pub async fn install_tun_support(&self, service_exe: &Path) -> anyhow::Result<()> {
         anyhow::ensure!(
             service_exe.exists(),
-            "找不到增强模式组件：{}",
-            service_exe.display()
+            "{}",
+            crate::tr!(
+                "找不到增强模式组件：{}",
+                "Enhanced Mode component not found: {}",
+                service_exe.display()
+            )
         );
         let core = self.ensure_core(&|_| {}).await?;
         let (exe, args) = if cfg!(windows) {
@@ -657,7 +728,10 @@ impl Engine {
             // An AppImage's files live on a per-user FUSE mount root can't
             // read; hand pkexec a copy in our own data dir instead.
             let staged = self.paths.runtime_dir.join("clash-rs-desktop-service");
-            fs::copy(service_exe, &staged).context("无法准备增强模式组件")?;
+            fs::copy(service_exe, &staged).context(t(
+                "无法准备增强模式组件",
+                "Couldn't prepare the Enhanced Mode component",
+            ))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt as _;
@@ -671,8 +745,11 @@ impl Engine {
         };
         match tokio::task::spawn_blocking(move || run_elevated(&exe, &args)).await?? {
             Elevated::Exited(0) => {}
-            Elevated::Cancelled => anyhow::bail!("已取消授权"),
-            Elevated::Exited(code) => anyhow::bail!("安装失败（错误码 {code}）"),
+            Elevated::Cancelled => anyhow::bail!(t("已取消授权", "Authorization cancelled")),
+            Elevated::Exited(code) => anyhow::bail!(crate::tr!(
+                "安装失败（错误码 {code}）",
+                "Install failed (error code {code})"
+            )),
         }
         // The service starts asynchronously; give it a moment to listen.
         for _ in 0..50 {
@@ -681,7 +758,10 @@ impl Engine {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        anyhow::bail!("增强模式服务没有启动")
+        anyhow::bail!(t(
+            "增强模式服务没有启动",
+            "The Enhanced Mode service didn't start"
+        ))
     }
 
     // ---- diagnostics -----------------------------------------------------------
@@ -767,7 +847,7 @@ impl Engine {
             .unwrap_or_default();
         let findings = assess(&ctx, &sys);
         if thorough && let Some(worst) = findings.first() {
-            self.note(&format!("网络诊断：{}", worst.title));
+            self.note(&crate::tr!("网络诊断：{}", "Diagnostics: {}", worst.title));
         }
         findings
     }
@@ -778,7 +858,7 @@ impl Engine {
         use crate::diagnose::Fix;
         match fix {
             Fix::ReapplySystemProxy => {
-                let port = self.mixed_port.context("尚未连接")?;
+                let port = self.mixed_port.context(t("尚未连接", "Not connected"))?;
                 self.apply_system_proxy(port)
             }
             Fix::RestoreSystemProxy => {
@@ -794,7 +874,10 @@ impl Engine {
             }
             Fix::FlushDns => match self.service.send(&Request::FlushDns).await {
                 Ok(Response::Ok) => Ok(()),
-                _ => anyhow::bail!("清理 DNS 缓存需要增强模式组件"),
+                _ => anyhow::bail!(t(
+                    "清理 DNS 缓存需要增强模式组件",
+                    "Flushing the DNS cache needs the Enhanced Mode component"
+                )),
             },
             Fix::Reconnect if !self.is_connected() => {
                 // Leftover tunnel while "disconnected": stop it.
@@ -963,7 +1046,7 @@ fn first_error_line(error: &anyhow::Error) -> String {
         .find(|line| line.contains("test failed:"))
         .or_else(|| lines.last())
         .copied()
-        .unwrap_or("未知错误");
+        .unwrap_or(t("未知错误", "Unknown error"));
     let detail = line
         .rsplit_once("invalid config: ")
         .or_else(|| line.rsplit_once("test failed: "))

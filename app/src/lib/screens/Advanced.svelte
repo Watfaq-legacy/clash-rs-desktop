@@ -1,16 +1,29 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import TitleBar from "$lib/components/TitleBar.svelte";
+  import { isEnglish, t } from "$lib/i18n.svelte";
   import { app } from "$lib/store.svelte";
 
-  const EXAMPLE = `# 在订阅配置之上生效，订阅更新后依然保留。
+  const EXAMPLE = $derived(
+    t(
+      `# 在订阅配置之上生效，订阅更新后依然保留。
 # 追加规则（插到订阅规则最前面，优先匹配）：
 prepend-rules:
   - DOMAIN-SUFFIX,example.com,DIRECT
 
 # 也可以直接覆盖任意设置，例如：
 # ipv6: true
-`;
+`,
+      `# Applied on top of your subscription and kept when it updates.
+# Add rules (inserted before subscription rules, matched first):
+prepend-rules:
+  - DOMAIN-SUFFIX,example.com,DIRECT
+
+# You can also override any setting, e.g.:
+# ipv6: true
+`,
+    ),
+  );
 
   let text = $state("");
   let saved = $state("");
@@ -32,18 +45,23 @@ prepend-rules:
     saving = false;
     if (result) {
       saved = text;
-      app.showToast(result.phase === "connected" ? "已保存并重新连接" : "已保存");
+      app.showToast(result.phase === "connected" ? t("已保存并重新连接", "Saved and reconnected") : t("已保存", "Saved"));
     }
   }
 </script>
 
 <div class="screen">
-  <TitleBar title="自定义配置" onBack={() => app.back()} />
+  <TitleBar title={t("自定义配置", "Custom configuration")} onBack={() => app.back()} />
 
   <div class="body">
     <p class="hint">
-      写法与 Clash 配置相同。用 <code>prepend-rules</code> / <code>append-rules</code> 追加规则，
-      <code>prepend-proxies</code>、<code>prepend-proxy-groups</code> 追加节点或分组，同名会替换。
+      {#if isEnglish()}
+        Same syntax as a Clash config. Use <code>prepend-rules</code> / <code>append-rules</code> to add rules, and
+        <code>prepend-proxies</code> or <code>prepend-proxy-groups</code> to add servers or groups; same names replace.
+      {:else}
+        写法与 Clash 配置相同。用 <code>prepend-rules</code> / <code>append-rules</code> 追加规则，
+        <code>prepend-proxies</code>、<code>prepend-proxy-groups</code> 追加节点或分组，同名会替换。
+      {/if}
     </p>
     <textarea
       bind:value={text}
@@ -52,9 +70,9 @@ prepend-rules:
       disabled={!loaded || saving}
     ></textarea>
     <div class="bar">
-      <button class="ghost" onclick={() => (text = saved)} disabled={!dirty || saving}>还原</button>
+      <button class="ghost" onclick={() => (text = saved)} disabled={!dirty || saving}>{t("还原", "Revert")}</button>
       <button class="primary" onclick={save} disabled={!dirty || saving}>
-        {saving ? "正在应用…" : "保存并应用"}
+        {saving ? t("正在应用…", "Applying…") : t("保存并应用", "Save and apply")}
       </button>
     </div>
   </div>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
+  import { t } from "$lib/i18n.svelte";
   import Icon from "./Icon.svelte";
 
   let {
@@ -14,7 +15,7 @@
 <header data-tauri-drag-region>
   <div class="left" data-tauri-drag-region>
     {#if onBack}
-      <button class="icon" onclick={onBack} aria-label="返回"><Icon name="back" /></button>
+      <button class="icon" onclick={onBack} aria-label={t("返回", "Back")}><Icon name="back" /></button>
       <span class="title" data-tauri-drag-region>{title}</span>
     {:else}
       <span class="brand" data-tauri-drag-region>
@@ -24,13 +25,13 @@
   </div>
   <div class="right">
     {#if onSettings}
-      <button class="icon" onclick={onSettings} aria-label="设置"><Icon name="settings" /></button>
+      <button class="icon" onclick={onSettings} aria-label={t("设置", "Settings")}><Icon name="settings" /></button>
     {/if}
-    <button class="icon" onclick={() => win.minimize()} aria-label="最小化">
+    <button class="icon" onclick={() => win.minimize()} aria-label={t("最小化", "Minimize")}>
       <Icon name="minimize" size={16} />
     </button>
     <!-- Hides to tray; the backend keeps the connection alive. -->
-    <button class="icon close" onclick={() => win.hide()} aria-label="关闭">
+    <button class="icon close" onclick={() => win.hide()} aria-label={t("关闭", "Close")}>
       <Icon name="close" size={16} />
     </button>
   </div>

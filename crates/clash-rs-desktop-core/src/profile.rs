@@ -7,7 +7,7 @@ use std::{
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
-use crate::paths::AppPaths;
+use crate::{i18n::t, paths::AppPaths, tr};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProfileId(pub String);
@@ -92,9 +92,17 @@ pub struct FetchedSubscription {
 /// Download a subscription URL and check it is a Clash config.
 pub async fn fetch_subscription(url: &str) -> anyhow::Result<FetchedSubscription> {
     let url = url.trim();
-    let parsed = reqwest::Url::parse(url).map_err(|_| anyhow::anyhow!("订阅链接格式不正确"))?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| {
+        anyhow::anyhow!(t(
+            "订阅链接格式不正确",
+            "The subscription link is not valid"
+        ))
+    })?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        anyhow::bail!("订阅链接需要以 http:// 或 https:// 开头");
+        anyhow::bail!(t(
+            "订阅链接需要以 http:// 或 https:// 开头",
+            "The subscription link must start with http:// or https://"
+        ));
     }
 
     let response = reqwest::Client::builder()
@@ -108,11 +116,19 @@ pub async fn fetch_subscription(url: &str) -> anyhow::Result<FetchedSubscription
         )
         .send()
         .await
-        .map_err(|error| anyhow::anyhow!("无法下载订阅：{error}"))?;
+        .map_err(|error| {
+            anyhow::anyhow!(tr!(
+                "无法下载订阅：{error}",
+                "Couldn't download the subscription: {error}"
+            ))
+        })?;
 
     let status = response.status();
     if !status.is_success() {
-        anyhow::bail!("订阅服务器返回错误（{status}）");
+        anyhow::bail!(tr!(
+            "订阅服务器返回错误（{status}）",
+            "The subscription server returned an error ({status})"
+        ));
     }
 
     let headers = response.headers().clone();
@@ -148,13 +164,20 @@ pub fn normalise_config(body: String) -> anyhow::Result<String> {
 }
 
 fn validate_clash_yaml(body: &str) -> anyhow::Result<()> {
-    let value: serde_yaml::Value = serde_yaml::from_str(body)
-        .map_err(|_| anyhow::anyhow!("订阅内容不是 Clash 配置，请确认链接支持 Clash"))?;
+    let value: serde_yaml::Value = serde_yaml::from_str(body).map_err(|_| {
+        anyhow::anyhow!(t(
+            "订阅内容不是 Clash 配置，请确认链接支持 Clash",
+            "The subscription isn't a Clash config. Make sure the link supports Clash."
+        ))
+    })?;
     let has_nodes = ["proxies", "proxy-providers"]
         .iter()
         .any(|key| value.get(*key).is_some());
     if !has_nodes {
-        anyhow::bail!("订阅里没有找到任何节点");
+        anyhow::bail!(t(
+            "订阅里没有找到任何节点",
+            "No servers found in the subscription"
+        ));
     }
     Ok(())
 }
@@ -297,13 +320,18 @@ impl ProfileStore {
 
     /// Import a config file (Clash YAML, or a text file of share links).
     pub fn import_file(&mut self, paths: &AppPaths, file: &Path) -> anyhow::Result<ProfileId> {
-        let text = fs::read_to_string(file).context("无法读取这个文件")?;
-        let body = normalise_config(text)
-            .map_err(|_| anyhow::anyhow!("这个文件不是 Clash 配置，也没有识别到节点链接"))?;
+        let text =
+            fs::read_to_string(file).context(t("无法读取这个文件", "Couldn't read this file"))?;
+        let body = normalise_config(text).map_err(|_| {
+            anyhow::anyhow!(t(
+                "这个文件不是 Clash 配置，也没有识别到节点链接",
+                "This file isn't a Clash config and contains no recognizable server links"
+            ))
+        })?;
         let name = file
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "本地配置".to_owned());
+            .unwrap_or_else(|| t("本地配置", "Local config").to_owned());
         let source = ProfileSource::LocalFile {
             path: file.to_path_buf(),
         };
@@ -312,16 +340,20 @@ impl ProfileStore {
 
     /// Import pasted share links (`ss://`, `vmess://`, ...) as a profile.
     pub fn import_links(&mut self, paths: &AppPaths, text: &str) -> anyhow::Result<ProfileId> {
-        let config = crate::links::config_from_links(text)
-            .ok_or_else(|| anyhow::anyhow!("没有识别到支持的节点链接"))?;
+        let config = crate::links::config_from_links(text).ok_or_else(|| {
+            anyhow::anyhow!(t(
+                "没有识别到支持的节点链接",
+                "No supported server links found"
+            ))
+        })?;
         let count = config["proxies"].as_sequence().map_or(0, Vec::len);
         let name = if count == 1 {
             config["proxies"][0]["name"]
                 .as_str()
-                .unwrap_or("我的节点")
+                .unwrap_or(t("我的节点", "My servers"))
                 .to_owned()
         } else {
-            format!("我的节点（{count} 个）")
+            tr!("我的节点（{count} 个）", "My servers ({count})")
         };
         self.import_content(
             paths,
@@ -425,7 +457,7 @@ impl ProfileStore {
         let name = fetched
             .suggested_name
             .clone()
-            .unwrap_or_else(|| "订阅".to_owned());
+            .unwrap_or_else(|| t("订阅", "Subscription").to_owned());
         let id = self.unique_profile_id(&name);
         let profile_dir = paths.profiles_dir.join(&id.0);
         fs::create_dir_all(&profile_dir)?;

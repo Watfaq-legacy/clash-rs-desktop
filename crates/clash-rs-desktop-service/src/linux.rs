@@ -40,10 +40,13 @@ pub fn run() -> anyhow::Result<()> {
 
 pub fn install(core: Option<PathBuf>) -> anyhow::Result<()> {
     // SAFETY: plain libc query.
-    anyhow::ensure!(unsafe { libc::geteuid() } == 0, "需要管理员（root）权限");
+    anyhow::ensure!(
+        unsafe { libc::geteuid() } == 0,
+        "administrator (root) privileges required"
+    );
     anyhow::ensure!(
         Path::new("/run/systemd/system").exists(),
-        "未检测到 systemd，无法安装增强模式服务"
+        "systemd not found; can't install the Enhanced Mode service"
     );
     let paths = ServicePaths::system();
     let _ = systemctl(&["stop", UNIT_NAME]);

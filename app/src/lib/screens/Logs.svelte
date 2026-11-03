@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "$lib/api";
   import TitleBar from "$lib/components/TitleBar.svelte";
+  import { t } from "$lib/i18n.svelte";
   import { app } from "$lib/store.svelte";
 
   let lines = $state<string[]>([]);
@@ -28,10 +29,14 @@
 </script>
 
 <div class="screen">
-  <TitleBar title="运行日志" onBack={() => app.back()} />
+  <TitleBar title={t("运行日志", "Logs")} onBack={() => app.back()} />
   <div class="logs" bind:this={box}>
     {#if lines.length === 0}
-      <p class="empty">{app.view?.phase === "connected" ? "暂无日志" : "连接后这里会显示内核日志"}</p>
+      <p class="empty">
+        {app.view?.phase === "connected"
+          ? t("暂无日志", "No logs yet")
+          : t("连接后这里会显示内核日志", "Core logs appear here after you connect")}
+      </p>
     {:else}
       {#each lines as line, i (i)}
         <div class="line {level(line)}" class:app={line.includes("[Choclite]")}>{line}</div>
@@ -39,8 +44,8 @@
     {/if}
   </div>
   <div class="bar">
-    <span>日志会保存到文件，最多保留约 6 MB</span>
-    <button onclick={() => app.run(() => api.openLogsDir())}>打开日志文件夹</button>
+    <span>{t("日志会保存到文件，最多保留约 6 MB", "Logs are saved to disk, up to about 6 MB")}</span>
+    <button onclick={() => app.run(() => api.openLogsDir())}>{t("打开日志文件夹", "Open folder")}</button>
   </div>
 </div>
 

@@ -7,10 +7,10 @@ Choclite 是基于 [clash-rs](https://github.com/Watfaq/clash-rs) 的桌面客�
 支持 **Windows** 和 **Linux**。macOS 请使用原生的 Choclite 应用。
 
 <p align="center">
-  <img src="docs/images/home-light.png" width="240" alt="主页（已连接）">
-  <img src="docs/images/home-dark.png" width="240" alt="主页（深色主题）">
-  <img src="docs/images/subscriptions.png" width="240" alt="订阅管理">
-  <img src="docs/images/diagnostics.png" width="240" alt="网络诊断">
+  <img src="docs/images/zh-CN/home-light.png" width="240" alt="主页（已连接）">
+  <img src="docs/images/zh-CN/home-dark.png" width="240" alt="主页（深色主题）">
+  <img src="docs/images/zh-CN/subscriptions.png" width="240" alt="订阅管理">
+  <img src="docs/images/zh-CN/diagnostics.png" width="240" alt="网络诊断">
 </p>
 
 ## 功能
@@ -20,6 +20,7 @@ Choclite 是基于 [clash-rs](https://github.com/Watfaq/clash-rs) 的桌面客�
 - 默认使用系统代理，无需管理员权限，不弹任何授权。
 - 按订阅记住所选节点，重启或切换模式后依然保留。
 - 订阅按服务商建议的间隔自动更新。
+- 界面支持简体中文和英文，默认跟随系统语言。
 
 **适应真实的网络环境**
 - 局域网地址、`.lan` / `.local` / `home.arpa` 等内网域名，以及网络自身的 DNS 后缀（公司网络、VPN、Tailscale）始终直连，并由系统原本的 DNS 解析。

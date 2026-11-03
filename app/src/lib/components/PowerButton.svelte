@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Phase } from "$lib/api";
+  import { t } from "$lib/i18n.svelte";
   import Icon from "./Icon.svelte";
 
   let { phase, onclick }: { phase: Phase; onclick: () => void } = $props();
@@ -14,7 +15,7 @@
   class:busy
   {onclick}
   disabled={busy}
-  aria-label={on ? "断开连接" : "连接"}
+  aria-label={on ? t("断开连接", "Disconnect") : t("连接", "Connect")}
   aria-pressed={on}
 >
   <span class="halo"></span>

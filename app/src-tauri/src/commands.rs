@@ -5,9 +5,9 @@
 use std::{path::PathBuf, time::Duration};
 
 use clash_rs_desktop_core::{
-    AppPaths, ConnectMode, ControllerConfigPatch, CustomRule, NeedsServiceInstall, ProfileId,
-    ProfileSource, ProfileStore, RoutingMode, RuleAction, RuleKind, engine::CoreUpdateInfo,
-    fetch_subscription,
+    AppPaths, ConnectMode, ControllerConfigPatch, CustomRule, Language, NeedsServiceInstall,
+    ProfileId, ProfileSource, ProfileStore, RoutingMode, RuleAction, RuleKind,
+    engine::CoreUpdateInfo, fetch_subscription, t, tr,
 };
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -90,7 +90,10 @@ pub async fn disconnect_flow(app: &AppHandle) -> CmdResult<View> {
         view.phase = Phase::Disconnected;
         view.connected_since = None;
         if let Err(error) = &result {
-            view.error = Some(format!("断开时出错：{error}"));
+            view.error = Some(tr!(
+                "断开时出错：{error}",
+                "Error while disconnecting: {error}"
+            ));
         }
     }))
 }
@@ -119,8 +122,9 @@ async fn apply_config_change(app: &AppHandle) -> CmdResult<View> {
             Ok(publish(app, |view| sync_from_engine(view, &engine)))
         }
         // A config the core rejects should not take the connection down.
+        // Both languages: the prefixes come from engine/service errors.
         Err(error)
-            if ["配置有误", "自定义配置"]
+            if ["配置有误", "自定义配置", "Config error", "Custom config"]
                 .iter()
                 .any(|p| error.to_string().starts_with(p)) =>
         {
@@ -155,7 +159,10 @@ async fn change_profiles(
         Err(message) => {
             {
                 let mut engine = state.engine.lock().await;
-                engine.note(&format!("新配置无法使用，已切回原来的配置：{message}"));
+                engine.note(&tr!(
+                    "新配置无法使用，已切回原来的配置：{message}",
+                    "The new config can't be used; switched back to the previous one: {message}"
+                ));
                 let profiles_dir = engine.paths().profiles_dir.clone();
                 let profiles = engine.profiles_mut();
                 profiles.restore_selection(previous);
@@ -183,8 +190,9 @@ async fn change_profiles(
                 let engine = state.engine.lock().await;
                 publish(app, |view| sync_from_engine(view, &engine));
             }
-            Err(format!(
-                "这个配置无法使用，已切回原来的配置。原因：{message}"
+            Err(tr!(
+                "这个配置无法使用，已切回原来的配置。原因：{message}",
+                "This config can't be used, so the previous one was restored. Reason: {message}"
             ))
         }
     }
@@ -371,7 +379,7 @@ fn service_exe(app: &AppHandle) -> PathBuf {
 #[tauri::command]
 pub async fn install_tun_support(app: AppHandle) -> CmdResult<View> {
     publish(&app, |view| {
-        view.step = Some("正在等待授权…".to_owned());
+        view.step = Some(t("正在等待授权…", "Waiting for authorization…").to_owned());
         view.phase = Phase::Connecting;
     });
     let result = {
@@ -442,10 +450,11 @@ pub async fn set_merged(app: AppHandle, id: String, merged: bool) -> CmdResult<V
             .profile(&ProfileId(id.clone()))
             .map(|p| p.name.clone())
             .unwrap_or_default();
-        engine.note(&format!(
-            "{}合并订阅「{name}」",
-            if merged { "" } else { "取消" }
-        ));
+        engine.note(&if merged {
+            tr!("合并订阅「{name}」", "Merged subscription \"{name}\"")
+        } else {
+            tr!("取消合并订阅「{name}」", "Unmerged subscription \"{name}\"")
+        });
     }
     change_profiles(&app, |profiles, _| {
         profiles.set_merged(&ProfileId(id), merged);
@@ -464,7 +473,12 @@ pub async fn set_bypass(app: AppHandle, entries: Vec<String>) -> CmdResult<View>
         let normalised = match parse_bypass_entry(entry) {
             Some(BypassEntry::Domain(domain)) => domain,
             Some(BypassEntry::Cidr(cidr)) => cidr,
-            None => return Err(format!("「{entry}」不是有效的域名或 IP 段")),
+            None => {
+                return Err(tr!(
+                    "「{entry}」不是有效的域名或 IP 段",
+                    "\"{entry}\" is not a valid domain or IP range"
+                ));
+            }
         };
         if !cleaned.contains(&normalised) {
             cleaned.push(normalised);
@@ -663,9 +677,13 @@ async fn refresh_profile(app: &AppHandle, id: ProfileId) -> CmdResult<View> {
         let profile = engine
             .profiles()
             .profile(&id)
-            .ok_or_else(|| "订阅不存在".to_owned())?;
+            .ok_or_else(|| t("订阅不存在", "Subscription not found").to_owned())?;
         let ProfileSource::RemoteUrl { url, .. } = &profile.source else {
-            return Err("这个配置不是订阅，无法更新".to_owned());
+            return Err(t(
+                "这个配置不是订阅，无法更新",
+                "This config isn't a subscription and can't be updated",
+            )
+            .to_owned());
         };
         (url.clone(), profile.active)
     };
@@ -843,7 +861,7 @@ async fn controller(state: &AppState) -> CmdResult<clash_rs_desktop_core::ClashI
         .lock()
         .await
         .controller()
-        .ok_or_else(|| "尚未连接".to_owned())
+        .ok_or_else(|| t("尚未连接", "Not connected").to_owned())
 }
 
 #[tauri::command]
@@ -897,10 +915,14 @@ pub async fn read_override(state: State<'_, AppState>) -> CmdResult<String> {
 #[tauri::command]
 pub async fn write_override(app: AppHandle, text: String) -> CmdResult<View> {
     if !text.trim().is_empty() {
-        let value: serde_yaml::Value =
-            serde_yaml::from_str(&text).map_err(|e| format!("YAML 格式有误：{e}"))?;
+        let value: serde_yaml::Value = serde_yaml::from_str(&text)
+            .map_err(|e| tr!("YAML 格式有误：{e}", "Invalid YAML: {e}"))?;
         if !value.is_mapping() {
-            return Err("自定义配置的顶层必须是键值对".to_owned());
+            return Err(t(
+                "自定义配置的顶层必须是键值对",
+                "The custom config's top level must be a key-value mapping",
+            )
+            .to_owned());
         }
     }
     let path = app
@@ -968,4 +990,15 @@ pub fn take_deep_link() -> Option<Value> {
 
 fn reqwest_url(raw: &str) -> Result<tauri::Url, ()> {
     tauri::Url::parse(raw.trim()).map_err(|_| ())
+}
+
+#[tauri::command]
+pub async fn set_language(app: AppHandle, language: Language) -> CmdResult<View> {
+    let state = app.state::<AppState>();
+    let mut engine = state.engine.lock().await;
+    let store = engine.settings_mut();
+    store.settings_mut().language = language;
+    store.save().map_err(user_error)?;
+    clash_rs_desktop_core::i18n::set_language(language);
+    Ok(publish(&app, |view| sync_from_engine(view, &engine)))
 }

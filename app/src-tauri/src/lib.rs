@@ -33,6 +33,7 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
             let engine = Engine::load(AppPaths::from_program_data(data_dir))?;
+            clash_rs_desktop_core::i18n::set_language(engine.settings().settings().language);
             let auto_connect = engine.settings().settings().auto_connect;
             app.manage(AppState::new(engine));
 
@@ -117,6 +118,7 @@ pub fn run() {
             commands::run_diagnostics,
             commands::apply_fix,
             commands::set_tun_ipv6,
+            commands::set_language,
             quit_app,
         ])
         .build(tauri::generate_context!())

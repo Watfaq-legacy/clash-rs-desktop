@@ -16,7 +16,7 @@ use serde_yaml::Value;
 
 use crate::{
     ClashIpcClient, ClashIpcClientConfig, ClashProcessManager, CoreLaunchRequest, CoreState,
-    UpdateChannel,
+    UpdateChannel, i18n::t, tr,
 };
 
 pub const SERVICE_NAME: &str = "ChocliteService";
@@ -129,7 +129,9 @@ impl ServicePaths {
 
 /// Make a caller-supplied config safe to run as LocalSystem.
 pub fn sanitize_config(config: &mut Value) -> anyhow::Result<()> {
-    let map = config.as_mapping_mut().context("配置格式不正确")?;
+    let map = config
+        .as_mapping_mut()
+        .context(t("配置格式不正确", "The config is malformed"))?;
 
     // The service decides how the core is controlled and served.
     for key in [
@@ -153,10 +155,11 @@ pub fn sanitize_config(config: &mut Value) -> anyhow::Result<()> {
                 continue;
             };
             if provider.get("type").and_then(Value::as_str) == Some("file") {
-                anyhow::bail!(
+                anyhow::bail!(tr!(
                     "增强模式不支持读取本地文件的规则或节点集（{}）",
+                    "Enhanced Mode can't use rule or server sets from local files ({})",
                     name.as_str().unwrap_or("?")
-                );
+                ));
             }
             provider.insert(
                 "path".into(),
@@ -199,7 +202,10 @@ fn reject_paths(value: &Value, key: &str) -> anyhow::Result<()> {
             }
         }
         Value::String(text) if PATH_KEYS.contains(&key) && escapes_data_dir(text, key) => {
-            anyhow::bail!("增强模式下配置不能引用其他目录的文件（{key}: {text}）");
+            anyhow::bail!(tr!(
+                "增强模式下配置不能引用其他目录的文件（{key}: {text}）",
+                "In Enhanced Mode the config can't reference files in other folders ({key}: {text})"
+            ));
         }
         _ => {}
     }
@@ -301,7 +307,8 @@ impl Supervisor {
 
     /// Sanitise, write and validate a config; returns once it's on disk.
     fn install_config(&self, config: &str) -> anyhow::Result<()> {
-        let mut value: Value = serde_yaml::from_str(config).context("配置格式不正确")?;
+        let mut value: Value =
+            serde_yaml::from_str(config).context(t("配置格式不正确", "The config is malformed"))?;
         sanitize_config(&mut value)?;
         std::fs::create_dir_all(&self.paths.data_dir)?;
 
@@ -524,7 +531,12 @@ impl ServiceClient {
     pub async fn send(&self, request: &Request) -> anyhow::Result<Response> {
         tokio::time::timeout(request_timeout(request), self.round_trip(request))
             .await
-            .map_err(|_| anyhow::anyhow!("增强模式服务没有响应"))?
+            .map_err(|_| {
+                anyhow::anyhow!(t(
+                    "增强模式服务没有响应",
+                    "The Enhanced Mode service isn't responding"
+                ))
+            })?
     }
 
     async fn round_trip(&self, request: &Request) -> anyhow::Result<Response> {
@@ -538,7 +550,14 @@ impl ServiceClient {
 
         let mut reply = String::new();
         stream.read_line(&mut reply).await?;
-        anyhow::ensure!(!reply.is_empty(), "增强模式服务断开了连接");
+        anyhow::ensure!(
+            !reply.is_empty(),
+            "{}",
+            t(
+                "增强模式服务断开了连接",
+                "The Enhanced Mode service closed the connection"
+            )
+        );
         Ok(serde_json::from_str(reply.trim())?)
     }
 }
@@ -629,10 +648,18 @@ mod transport {
                 Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
-                Err(error) => return Err(error).context("增强模式服务未运行"),
+                Err(error) => {
+                    return Err(error).context(crate::i18n::t(
+                        "增强模式服务未运行",
+                        "The Enhanced Mode service isn't running",
+                    ));
+                }
             }
         }
-        anyhow::bail!("增强模式服务繁忙")
+        anyhow::bail!(crate::i18n::t(
+            "增强模式服务繁忙",
+            "The Enhanced Mode service is busy"
+        ))
     }
 
     pub struct Listener {
@@ -708,9 +735,10 @@ mod transport {
     use tokio::net::{UnixListener, UnixStream};
 
     pub async fn connect(path: &str) -> anyhow::Result<UnixStream> {
-        UnixStream::connect(path)
-            .await
-            .context("增强模式服务未运行")
+        UnixStream::connect(path).await.context(crate::i18n::t(
+            "增强模式服务未运行",
+            "The Enhanced Mode service isn't running",
+        ))
     }
 
     pub struct Listener(UnixListener);

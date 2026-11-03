@@ -3,9 +3,13 @@
   import Icon from "$lib/components/Icon.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import * as fmt from "$lib/format";
+  import { t } from "$lib/i18n.svelte";
   import { app } from "$lib/store.svelte";
 
-  const BUILTIN: Record<string, string> = { DIRECT: "直连（不使用代理）", REJECT: "拒绝" };
+  const BUILTIN: Record<string, string> = $derived({
+    DIRECT: t("直连（不使用代理）", "Direct (no proxy)"),
+    REJECT: t("拒绝", "Reject"),
+  });
 
   let nodes = $state<Nodes | null>(null);
   let testing = $state(false);
@@ -56,7 +60,7 @@
     <span class="name">
       <span>{item.auto ? item.name : (BUILTIN[item.name] ?? label.label)}</span>
       {#if item.auto && item.resolved}
-        <small>当前：{item.resolved}</small>
+        <small>{t(`当前：${item.resolved}`, `Now: ${item.resolved}`)}</small>
       {/if}
     </span>
     {#if switching === item.name}
@@ -71,13 +75,13 @@
 {/snippet}
 
 <div class="screen">
-  <TitleBar title="选择节点" onBack={() => app.back()} />
+  <TitleBar title={t("选择节点", "Servers")} onBack={() => app.back()} />
 
   <div class="toolbar">
     <span class="group">{nodes?.group ?? ""}</span>
     <button class="test" onclick={test} disabled={testing || !nodes?.group}>
       <span class:spin={testing}><Icon name="refresh" size={14} /></span>
-      {testing ? "测速中" : "测速"}
+      {testing ? t("测速中", "Testing") : t("测速", "Test speed")}
     </button>
   </div>
 
@@ -87,7 +91,7 @@
         <div class="row skeleton"></div>
       {/each}
     {:else if nodes.items.length === 0}
-      <p class="empty">这个订阅没有可选的节点</p>
+      <p class="empty">{t("这个订阅没有可选的节点", "This subscription has no servers to choose from")}</p>
     {:else}
       {#if autos.length}
         <div class="section">
@@ -95,7 +99,7 @@
         </div>
       {/if}
       {#if manual.length}
-        <div class="caption">手动选择</div>
+        <div class="caption">{t("手动选择", "Choose manually")}</div>
         <div class="section">
           {#each manual as item (item.name)}{@render row(item)}{/each}
         </div>

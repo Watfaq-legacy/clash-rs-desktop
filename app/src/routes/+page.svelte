@@ -16,13 +16,17 @@
   import Profiles from "$lib/screens/Profiles.svelte";
   import Settings from "$lib/screens/Settings.svelte";
   import { app } from "$lib/store.svelte";
+  import { isEnglish, t } from "$lib/i18n.svelte";
 
   $effect(() => {
     app.init();
     // Surface unexpected UI errors instead of failing silently.
-    const onError = (event: ErrorEvent) => app.showToast(`界面出错：${event.message}`, "error");
-    const onRejection = (event: PromiseRejectionEvent) =>
-      app.showToast(`界面出错：${String(event.reason?.message ?? event.reason)}`, "error");
+    const onError = (event: ErrorEvent) =>
+      app.showToast(t(`界面出错：${event.message}`, `UI error: ${event.message}`), "error");
+    const onRejection = (event: PromiseRejectionEvent) => {
+      const reason = String(event.reason?.message ?? event.reason);
+      app.showToast(t(`界面出错：${reason}`, `UI error: ${reason}`), "error");
+    };
     window.addEventListener("error", onError);
     window.addEventListener("unhandledrejection", onRejection);
     return () => {
@@ -51,7 +55,7 @@
     importing = false;
     app.pendingImport = null;
     if (view) {
-      app.showToast("订阅已导入");
+      app.showToast(t("订阅已导入", "Subscription imported"));
       app.back("home");
     }
   }
@@ -94,37 +98,59 @@
 
   {#if app.view?.needsInstall}
     <Sheet
-      title={app.view.needsInstall === "outdated" ? "更新增强模式组件" : "开启增强模式"}
+      title={app.view.needsInstall === "outdated"
+        ? t("更新增强模式组件", "Update Enhanced Mode")
+        : t("开启增强模式", "Turn on Enhanced Mode")}
       onclose={() => api.dismissError()}
     >
-      <p>增强模式会接管电脑上<b>所有程序</b>的网络流量，包括不支持系统代理的游戏和命令行工具。</p>
+      {#if isEnglish()}
+        <p>
+          Enhanced Mode (TUN) routes traffic from <b>every app</b> on your computer, including games
+          and command-line tools that ignore the system proxy.
+        </p>
+      {:else}
+        <p>增强模式会接管电脑上<b>所有程序</b>的网络流量，包括不支持系统代理的游戏和命令行工具。</p>
+      {/if}
       <p>
         {#if isWindows}
-          需要安装一个后台组件，Windows 会弹出一次管理员授权，之后开关就不再需要授权。
+          {t(
+            "需要安装一个后台组件，Windows 会弹出一次管理员授权，之后开关就不再需要授权。",
+            "A background service needs to be installed. Windows will ask for administrator approval once; after that, no more prompts.",
+          )}
         {:else}
-          需要为内核授予一次网络权限，系统会请求一次管理员密码。
+          {t(
+            "需要为内核授予一次网络权限，系统会请求一次管理员密码。",
+            "The core needs network permission once. You'll be asked for your administrator password.",
+          )}
         {/if}
       </p>
       {#snippet actions()}
-        <button class="ghost" onclick={() => api.dismissError()} disabled={installing}>取消</button>
+        <button class="ghost" onclick={() => api.dismissError()} disabled={installing}>
+          {t("取消", "Cancel")}
+        </button>
         <button class="primary" onclick={install} disabled={installing}>
-          {installing ? "等待授权…" : "授权并开启"}
+          {installing ? t("等待授权…", "Waiting for approval…") : t("授权并开启", "Approve and turn on")}
         </button>
       {/snippet}
     </Sheet>
   {/if}
 
   {#if app.pendingImport}
-    <Sheet title="导入订阅" onclose={() => (app.pendingImport = null)}>
-      <p>网页请求导入一个订阅{app.pendingImport.name ? `「${app.pendingImport.name}」` : ""}：</p>
+    <Sheet title={t("导入订阅", "Import subscription")} onclose={() => (app.pendingImport = null)}>
+      <p>
+        {t(
+          `网页请求导入一个订阅${app.pendingImport.name ? `「${app.pendingImport.name}」` : ""}：`,
+          `A web page wants to import a subscription${app.pendingImport.name ? ` "${app.pendingImport.name}"` : ""}:`,
+        )}
+      </p>
       <p class="link">{app.pendingImport.url}</p>
-      <p>只导入你信任的服务商提供的订阅。</p>
+      <p>{t("只导入你信任的服务商提供的订阅。", "Only import subscriptions from providers you trust.")}</p>
       {#snippet actions()}
         <button class="ghost" onclick={() => (app.pendingImport = null)} disabled={importing}>
-          取消
+          {t("取消", "Cancel")}
         </button>
         <button class="primary" onclick={confirmImport} disabled={importing}>
-          {importing ? "正在导入…" : "导入并使用"}
+          {importing ? t("正在导入…", "Importing…") : t("导入并使用", "Import and use")}
         </button>
       {/snippet}
     </Sheet>
@@ -134,7 +160,7 @@
     <div class="toast {app.toast.tone}" transition:fly={{ y: 16, duration: 220 }}>
       {#if app.toast.tone === "error"}<Icon name="alert" size={16} />{/if}
       <span>{app.toast.text}</span>
-      <button onclick={() => (app.toast = null)} aria-label="关闭"><Icon name="close" size={14} /></button>
+      <button onclick={() => (app.toast = null)} aria-label={t("关闭", "Close")}><Icon name="close" size={14} /></button>
     </div>
   {/if}
 </div>

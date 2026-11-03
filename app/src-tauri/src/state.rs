@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 
 use clash_rs_desktop_core::{
-    ConnectMode, CustomRule, Engine, NeedsServiceInstall, RoutingMode, SubscriptionInfo,
+    ConnectMode, CustomRule, Engine, Language, NeedsServiceInstall, RoutingMode, SubscriptionInfo,
     UserProfile,
 };
 use serde::Serialize;
@@ -71,6 +71,9 @@ pub struct View {
     /// Most serious problem the background check found, if any.
     pub health_issue: Option<String>,
     pub tun_ipv6: bool,
+    pub language: Language,
+    /// `language` resolved against the OS locale.
+    pub english: bool,
     pub core_version: Option<String>,
     pub app_version: &'static str,
 }
@@ -95,6 +98,8 @@ impl AppState {
             leaks: Vec::new(),
             health_issue: None,
             tun_ipv6: false,
+            language: Language::default(),
+            english: false,
             core_version: None,
             app_version: env!("CARGO_PKG_VERSION"),
         };
@@ -127,6 +132,8 @@ pub fn sync_from_engine(view: &mut View, engine: &Engine) {
     view.custom_rules = settings.custom_rules.clone();
     view.bypass = settings.bypass.clone();
     view.tun_ipv6 = settings.tun_ipv6;
+    view.language = settings.language;
+    view.english = clash_rs_desktop_core::i18n::is_english();
     view.connected_mode = engine.connected_mode();
     view.port = engine.mixed_port();
     view.core_version = engine.core_version();

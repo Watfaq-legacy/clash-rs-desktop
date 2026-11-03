@@ -327,7 +327,10 @@ mod platform {
         let output = Command::new("gsettings")
             .args(["get", schema, key])
             .output()
-            .context("没有找到 gsettings，当前桌面环境暂不支持自动设置系统代理")?;
+            .context(crate::i18n::t(
+                "没有找到 gsettings，当前桌面环境暂不支持自动设置系统代理",
+                "gsettings not found; this desktop environment doesn't support setting the system proxy automatically",
+            ))?;
         anyhow::ensure!(
             output.status.success(),
             "gsettings get {schema} {key} failed"

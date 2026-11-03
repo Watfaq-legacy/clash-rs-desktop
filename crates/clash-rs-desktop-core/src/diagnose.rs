@@ -10,6 +10,8 @@ use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::{i18n::t, tr};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Level {
@@ -123,8 +125,11 @@ pub fn assess(ctx: &Context, sys: &SystemState) -> Vec<Finding> {
             Finding::new(
                 "all-good",
                 Level::Ok,
-                "没有发现问题",
-                "网络和代理工作正常。",
+                t("没有发现问题", "No problems found"),
+                t(
+                    "网络和代理工作正常。",
+                    "Your network and proxy are working normally.",
+                ),
             ),
         );
     }
@@ -144,8 +149,11 @@ fn assess_disconnected(_ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>
         out.push(Finding::new(
             "no-network",
             Level::Error,
-            "电脑本身没有连上网络",
-            "没有连接 Choclite 时也无法访问互联网。请检查 Wi-Fi 或网线，与 Choclite 无关。",
+            t("电脑本身没有连上网络", "This computer isn't connected to the internet"),
+            t(
+                "没有连接 Choclite 时也无法访问互联网。请检查 Wi-Fi 或网线，与 Choclite 无关。",
+                "The internet is unreachable even without Choclite. Check your Wi-Fi or cable; this isn't caused by Choclite.",
+            ),
         ));
     }
     // A local proxy left switched on with nothing listening breaks every app.
@@ -160,9 +168,13 @@ fn assess_disconnected(_ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>
             Finding::new(
                 "stale-proxy",
                 Level::Error,
-                "系统代理指向一个没有运行的程序",
-                format!(
+                t(
+                    "系统代理指向一个没有运行的程序",
+                    "The system proxy points to a program that isn't running",
+                ),
+                tr!(
                     "系统代理被设置为 {}，但那里没有程序在运行，所以浏览器打不开网页。可能是代理软件异常退出后没有恢复设置。",
+                    "The system proxy is set to {}, but nothing is running there, so browsers can't load pages. A proxy app probably quit without restoring the setting.",
                     sys.proxy_server.as_deref().unwrap_or_default()
                 ),
             )
@@ -174,8 +186,14 @@ fn assess_disconnected(_ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>
             Finding::new(
                 "stale-tun",
                 Level::Warn,
-                "增强模式的虚拟网卡还在",
-                format!("未连接时网卡 {name} 仍然存在，可能会影响上网。点击修复会停止它。"),
+                t(
+                    "增强模式的虚拟网卡还在",
+                    "The Enhanced Mode virtual adapter is still present",
+                ),
+                tr!(
+                    "未连接时网卡 {name} 仍然存在，可能会影响上网。点击修复会停止它。",
+                    "Adapter {name} is still present while disconnected and may affect your internet. Fix stops it."
+                ),
             )
             .fix(Fix::Reconnect),
         );
@@ -185,16 +203,19 @@ fn assess_disconnected(_ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>
 fn assess_system_proxy(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
     if !sys.proxy_enabled || !ours(sys.proxy_server.as_deref(), ctx.mixed_port) {
         let now = match (sys.proxy_enabled, &sys.proxy_server) {
-            (false, _) => "已被关闭".to_owned(),
-            (true, Some(server)) => format!("被改成了 {server}"),
-            (true, None) => "被修改".to_owned(),
+            (false, _) => t("已被关闭", " was turned off").to_owned(),
+            (true, Some(server)) => tr!("被改成了 {server}", " was changed to {server}"),
+            (true, None) => t("被修改", " was changed").to_owned(),
         };
         out.push(
             Finding::new(
                 "proxy-changed",
                 Level::Error,
-                "系统代理被其他程序修改了",
-                format!("系统代理设置{now}，浏览器的流量不再经过 Choclite。常见原因是同时开着其他代理软件。"),
+                t("系统代理被其他程序修改了", "Another program changed the system proxy"),
+                tr!(
+                    "系统代理设置{now}，浏览器的流量不再经过 Choclite。常见原因是同时开着其他代理软件。",
+                    "The system proxy{now}, so browser traffic no longer goes through Choclite. This usually means another proxy app is running."
+                ),
             )
             .fix(Fix::ReapplySystemProxy),
         );
@@ -204,8 +225,11 @@ fn assess_system_proxy(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>)
             Finding::new(
                 "port-dead",
                 Level::Error,
-                "代理端口没有响应",
-                "Choclite 的本地代理端口没有在监听，浏览器无法通过它上网。",
+                t("代理端口没有响应", "The proxy port isn't responding"),
+                t(
+                    "Choclite 的本地代理端口没有在监听，浏览器无法通过它上网。",
+                    "Choclite's local proxy port isn't listening, so browsers can't go online through it.",
+                ),
             )
             .fix(Fix::Reconnect),
         );
@@ -214,10 +238,11 @@ fn assess_system_proxy(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>)
         out.push(Finding::new(
             "other-vpn",
             Level::Info,
-            "检测到其他 VPN",
-            format!(
+            t("检测到其他 VPN", "Another VPN detected"),
+            tr!(
                 "{} 正在运行。如果网络不稳定，可以先关闭它们再试。",
-                sys.other_vpns.join("、")
+                "Running: {}. If your connection is unstable, close them and try again.",
+                sys.other_vpns.join(t("、", ", "))
             ),
         ));
     }
@@ -229,8 +254,14 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
             Finding::new(
                 "tun-missing",
                 Level::Error,
-                "增强模式的虚拟网卡不存在",
-                "增强模式已开启，但系统里找不到它的虚拟网卡，流量没有被接管。",
+                t(
+                    "增强模式的虚拟网卡不存在",
+                    "The Enhanced Mode virtual adapter is missing",
+                ),
+                t(
+                    "增强模式已开启，但系统里找不到它的虚拟网卡，流量没有被接管。",
+                    "Enhanced Mode is on, but its virtual adapter can't be found, so traffic isn't being captured.",
+                ),
             )
             .fix(Fix::Reconnect),
         );
@@ -241,8 +272,11 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
             Finding::new(
                 "tun-down",
                 Level::Error,
-                "虚拟网卡没有正常工作",
-                format!("网卡 {tun} 没有启用或没有分配地址。"),
+                t("虚拟网卡没有正常工作", "The virtual adapter isn't working"),
+                tr!(
+                    "网卡 {tun} 没有启用或没有分配地址。",
+                    "Adapter {tun} is down or has no address."
+                ),
             )
             .fix(Fix::Reconnect),
         );
@@ -261,8 +295,14 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
                 Finding::new(
                     "route-stolen",
                     Level::Error,
-                    "上网流量没有经过增强模式",
-                    format!("系统把访问互联网的流量交给了「{culprit}」，而不是 Choclite。通常是另一个 VPN 抢占了默认路由；关闭它后点击修复重新连接。"),
+                    t(
+                        "上网流量没有经过增强模式",
+                        "Internet traffic isn't going through Enhanced Mode",
+                    ),
+                    tr!(
+                        "系统把访问互联网的流量交给了「{culprit}」，而不是 Choclite。通常是另一个 VPN 抢占了默认路由；关闭它后点击修复重新连接。",
+                        "The system sends internet traffic to \"{culprit}\" instead of Choclite. Usually another VPN has taken over the default route; close it, then click Fix to reconnect."
+                    ),
                 )
                 .fix(Fix::Reconnect),
             );
@@ -270,8 +310,11 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
         None => out.push(Finding::new(
             "route-none",
             Level::Error,
-            "没有可用的网络路由",
-            "系统找不到访问互联网的路径。请检查网络连接。",
+            t("没有可用的网络路由", "No network route available"),
+            t(
+                "系统找不到访问互联网的路径。请检查网络连接。",
+                "The system has no route to the internet. Check your network connection.",
+            ),
         )),
     }
 
@@ -280,9 +323,10 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
             Finding::new(
                 "route-loop",
                 Level::Error,
-                "检测到路由环路",
-                format!(
+                t("检测到路由环路", "Routing loop detected"),
+                tr!(
                     "有 {} 个连接把代理服务器自己的流量又送回了 Choclite，形成死循环，会导致断网或越来越卡。通常是其他 VPN 或网络软件改动了路由；点击修复会重新建立连接。",
+                    "{} connections are sending the proxy server's own traffic back into Choclite, creating a loop that causes dropouts or growing slowness. Usually another VPN or network tool changed the routes; Fix reconnects.",
                     ctx.looping_connections
                 ),
             )
@@ -298,8 +342,11 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
             Finding::new(
                 "dns-bypass",
                 Level::Warn,
-                "部分 DNS 查询没有经过 Choclite",
-                "系统的域名解析绕过了增强模式。可能是浏览器开启了「安全 DNS」，或者其他网卡的 DNS 优先级更高。分流规则可能因此不准确。",
+                t("部分 DNS 查询没有经过 Choclite", "Some DNS queries bypass Choclite"),
+                t(
+                    "系统的域名解析绕过了增强模式。可能是浏览器开启了「安全 DNS」，或者其他网卡的 DNS 优先级更高。分流规则可能因此不准确。",
+                    "System name lookups bypass Enhanced Mode. Your browser may have \"Secure DNS\" on, or another adapter's DNS has higher priority. Site rules may be inaccurate as a result.",
+                ),
             )
             .fix(Fix::FlushDns),
         );
@@ -316,8 +363,11 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
             Finding::new(
                 "ipv6-bypass",
                 Level::Warn,
-                "IPv6 流量会绕过增强模式",
-                "你的网络有公网 IPv6，但增强模式只接管了 IPv4。支持 IPv6 的网站可能直接连接，不经过代理。开启后增强模式会同时接管 IPv6。",
+                t("IPv6 流量会绕过增强模式", "IPv6 traffic bypasses Enhanced Mode"),
+                t(
+                    "你的网络有公网 IPv6，但增强模式只接管了 IPv4。支持 IPv6 的网站可能直接连接，不经过代理。开启后增强模式会同时接管 IPv6。",
+                    "Your network has public IPv6, but Enhanced Mode only captures IPv4. Sites that support IPv6 may connect directly, skipping the proxy. Turning this on makes Enhanced Mode capture IPv6 too.",
+                ),
             )
             .fix(Fix::EnableTunIpv6),
         );
@@ -327,10 +377,14 @@ fn assess_tun(ctx: &Context, sys: &SystemState, out: &mut Vec<Finding>) {
         out.push(Finding::new(
             "other-vpn",
             Level::Warn,
-            "检测到其他 VPN 或虚拟网卡",
-            format!(
+            t(
+                "检测到其他 VPN 或虚拟网卡",
+                "Another VPN or virtual adapter detected",
+            ),
+            tr!(
                 "{} 正在运行，可能与增强模式争抢路由。如果遇到断网，先关闭它们。",
-                sys.other_vpns.join("、")
+                "Running: {}. These may compete with Enhanced Mode for routes; if you lose connection, close them first.",
+                sys.other_vpns.join(t("、", ", "))
             ),
         ));
     }
@@ -343,28 +397,43 @@ fn assess_reachability(ctx: &Context, out: &mut Vec<Finding>) {
         (false, _) if ctx.direct_delay.is_some() => out.push(Finding::new(
             "local-down",
             Level::Error,
-            "本地网络无法访问互联网",
-            "连直连都无法访问互联网，问题在你的网络（Wi-Fi、宽带或路由器），不是节点。",
+            t(
+                "本地网络无法访问互联网",
+                "Your local network can't reach the internet",
+            ),
+            t(
+                "连直连都无法访问互联网，问题在你的网络（Wi-Fi、宽带或路由器），不是节点。",
+                "Even direct connections fail. The problem is your network (Wi-Fi, broadband or router), not the server.",
+            ),
         )),
         (true, Some(None)) if ctx.direct_mode => out.push(Finding::new(
             "node-down",
             Level::Info,
-            "当前节点无法连接",
-            "现在是「全部直连」模式，不经过节点，所以不影响上网。切换到其他模式前，建议先换一个可用的节点。",
+            t("当前节点无法连接", "The current server is unreachable"),
+            t(
+                "现在是「全部直连」模式，不经过节点，所以不影响上网。切换到其他模式前，建议先换一个可用的节点。",
+                "You're in Direct mode, which doesn't use servers, so browsing isn't affected. Pick a working server before switching to another mode.",
+            ),
         )),
         (true, Some(None)) => out.push(Finding::new(
             "node-down",
             Level::Error,
-            "当前节点无法连接",
-            "本地网络正常，但通过当前节点无法访问。可以在「当前节点」里换一个节点，或者更新订阅。",
+            t("当前节点无法连接", "The current server is unreachable"),
+            t(
+                "本地网络正常，但通过当前节点无法访问。可以在「当前节点」里换一个节点，或者更新订阅。",
+                "Your local network works, but nothing loads through the current server. Pick another server, or update the subscription.",
+            ),
         )),
         (true, Some(Some(ms))) => out.push(Finding::new(
             "speed",
             Level::Info,
-            "连接正常",
+            t("连接正常", "Connection is working"),
             match ctx.direct_delay {
-                Some(Some(direct)) => format!("节点延迟 {ms} ms，直连延迟 {direct} ms。"),
-                _ => format!("节点延迟 {ms} ms。"),
+                Some(Some(direct)) => tr!(
+                    "节点延迟 {ms} ms，直连延迟 {direct} ms。",
+                    "Server latency {ms} ms, direct latency {direct} ms."
+                ),
+                _ => tr!("节点延迟 {ms} ms。", "Server latency {ms} ms."),
             },
         )),
         _ => {}

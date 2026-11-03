@@ -4,6 +4,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import * as fmt from "$lib/format";
+  import { t } from "$lib/i18n.svelte";
   import { app } from "$lib/store.svelte";
 
   const profiles = $derived(app.view?.profiles ?? []);
@@ -37,7 +38,7 @@
       return;
     }
     confirmDelete = null;
-    act(profile.id, () => api.removeProfile(profile.id), "已删除");
+    act(profile.id, () => api.removeProfile(profile.id), t("已删除", "Deleted"));
   }
 
   function usage(profile: Profile) {
@@ -49,7 +50,7 @@
 </script>
 
 <div class="screen">
-  <TitleBar title="订阅" onBack={() => app.back()} />
+  <TitleBar title={t("订阅", "Subscriptions")} onBack={() => app.back()} />
 
   <div class="scroll">
     {#each profiles as profile (profile.id)}
@@ -65,15 +66,18 @@
           <span class="info">
             <span class="name">
               {profile.name}
-              {#if showMerge && profile.active}<span class="tag">主订阅</span>{/if}
+              {#if showMerge && profile.active}<span class="tag">{t("主订阅", "Main")}</span>{/if}
             </span>
             {#if u}
               <span class="meter"><span style="width: {u.ratio * 100}%"></span></span>
             {/if}
             <span class="meta num">
               {#if u}{fmt.bytes(u.used)} / {fmt.bytes(u.total, 0)}{/if}
-              {#if expire}{u ? " · " : ""}{fmt.date(expire)} 到期{/if}
-              {#if !u && !expire && profile.updatedAt}更新于 {fmt.relative(profile.updatedAt)}{/if}
+              {#if expire}{u ? " · " : ""}{t(`${fmt.date(expire)} 到期`, `Expires ${fmt.date(expire)}`)}{/if}
+              {#if !u && !expire && profile.updatedAt}{t(
+                  `更新于 ${fmt.relative(profile.updatedAt)}`,
+                  `Updated ${fmt.relative(profile.updatedAt)}`,
+                )}{/if}
             </span>
           </span>
         </button>
@@ -81,7 +85,7 @@
           {#if showMerge && !profile.active}
             <!-- A checkbox, not a pill: its state must read as a choice, so
                  nobody "taps the badge" and unmerges by accident. -->
-            <label class="merge" class:on={profile.merged} title="把这个订阅的节点加入主订阅">
+            <label class="merge" class:on={profile.merged} title={t("把这个订阅的节点加入主订阅", "Add this subscription's servers to the main one")}>
               <input
                 type="checkbox"
                 checked={profile.merged}
@@ -89,21 +93,22 @@
                 onchange={async (event) => {
                   const input = event.currentTarget;
                   const merged = input.checked;
-                  await act(profile.id, () => api.setMerged(profile.id, merged), merged ? "已合并到主订阅" : "已取消合并");
+                  await act(profile.id, () => api.setMerged(profile.id, merged), merged ? t("已合并到主订阅", "Merged into main subscription") : t("已取消合并", "Unmerged"));
                   // If it was rolled back, show the real state again.
                   input.checked = !!app.view?.profiles.find((p) => p.id === profile.id)?.merged;
                 }}
               />
               <span class="box"><Icon name="check" size={12} stroke={3} /></span>
-              合并
+              {t("合并", "Merge")}
             </label>
           {/if}
           {#if profile.remote}
             <button
               class="icon"
-              title="更新订阅"
+              title={t("更新订阅", "Update subscription")}
               disabled={!!busy}
-              onclick={() => act(profile.id, () => api.refreshSubscription(profile.id), "订阅已更新")}
+              onclick={() =>
+                act(profile.id, () => api.refreshSubscription(profile.id), t("订阅已更新", "Subscription updated"))}
             >
               <span class:spin={busy === profile.id}><Icon name="refresh" size={16} /></span>
             </button>
@@ -111,28 +116,33 @@
           <button
             class="icon del"
             class:confirm={confirmDelete === profile.id}
-            title="删除"
+            title={t("删除", "Delete")}
             disabled={!!busy}
             onclick={() => remove(profile)}
           >
-            {#if confirmDelete === profile.id}确认删除{:else}<Icon name="trash" size={16} />{/if}
+            {#if confirmDelete === profile.id}{t("确认删除", "Confirm")}{:else}<Icon name="trash" size={16} />{/if}
           </button>
         </div>
       </article>
     {/each}
 
     <button class="add" onclick={() => app.go("add")}>
-      <Icon name="plus" size={16} /> 添加订阅
+      <Icon name="plus" size={16} /> {t("添加订阅", "Add subscription")}
     </button>
 
     {#if profiles.length > 1}
       <div class="merge-card">
         <div class="merge-row">
           <span>
-            <b>合并多个订阅</b>
-            <small>把其他订阅的节点加入当前订阅，"自动选择"会在所有节点里挑最快的。分流规则沿用主订阅。</small>
+            <b>{t("合并多个订阅", "Merge subscriptions")}</b>
+            <small>
+              {t(
+                `把其他订阅的节点加入当前订阅，"自动选择"会在所有节点里挑最快的。分流规则沿用主订阅。`,
+                `Add servers from other subscriptions to the current one. "Auto select" picks the fastest from all of them. Routing rules come from the main subscription.`,
+              )}
+            </small>
           </span>
-          <Switch label="合并多个订阅" checked={showMerge} onchange={setMerging} />
+          <Switch label={t("合并多个订阅", "Merge subscriptions")} checked={showMerge} onchange={setMerging} />
         </div>
       </div>
     {/if}
