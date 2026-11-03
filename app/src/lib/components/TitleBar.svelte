@@ -18,7 +18,7 @@
       <span class="title" data-tauri-drag-region>{title}</span>
     {:else}
       <span class="brand" data-tauri-drag-region>
-        <span class="dot"></span>Choclite
+        <img class="logo" src="/brand/logo.png" alt="" draggable="false" />Choclite
       </span>
     {/if}
   </div>
@@ -64,12 +64,10 @@
     letter-spacing: 0.2px;
     padding-left: 6px;
   }
-  .dot {
-    width: 14px;
-    height: 14px;
-    border-radius: 5px;
-    background: linear-gradient(135deg, var(--accent-2), var(--accent));
-    box-shadow: 0 2px 8px var(--accent-soft);
+  .logo {
+    width: 20px;
+    height: 20px;
+    pointer-events: none;
   }
   .title {
     font-weight: 600;

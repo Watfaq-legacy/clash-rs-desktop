@@ -63,10 +63,11 @@ pub trait SystemProxyBackend {
     fn restore(&self, snapshot: &SystemProxySnapshot) -> anyhow::Result<()>;
 }
 
+/// WinINet on Windows, gsettings on Linux.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct WindowsSystemProxy;
+pub struct PlatformSystemProxy;
 
-impl SystemProxyBackend for WindowsSystemProxy {
+impl SystemProxyBackend for PlatformSystemProxy {
     fn snapshot(&self) -> anyhow::Result<SystemProxySnapshot> {
         platform::snapshot()
     }
@@ -307,20 +308,78 @@ mod platform {
     }
 }
 
+/// Linux desktops: GNOME-compatible `gsettings` (GNOME, Cinnamon, Budgie,
+/// Pantheon, ...). The snapshot stores `mode` in `enabled`, `host:port` of
+/// the HTTP proxy in `server`, and the raw `ignore-hosts` value in `bypass`.
 #[cfg(not(windows))]
 mod platform {
+    use std::process::Command;
+
+    use anyhow::Context as _;
+
     use super::{SystemProxySnapshot, SystemProxyTarget};
 
+    const SCHEMA: &str = "org.gnome.system.proxy";
+
+    fn get(schema: &str, key: &str) -> anyhow::Result<String> {
+        let output = Command::new("gsettings")
+            .args(["get", schema, key])
+            .output()
+            .context("没有找到 gsettings，当前桌面环境暂不支持自动设置系统代理")?;
+        anyhow::ensure!(output.status.success(), "gsettings get {schema} {key} failed");
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    }
+
+    fn set(schema: &str, key: &str, value: &str) -> anyhow::Result<()> {
+        let status = Command::new("gsettings")
+            .args(["set", schema, key, value])
+            .status()
+            .context("failed to run gsettings")?;
+        anyhow::ensure!(status.success(), "gsettings set {schema} {key} failed");
+        Ok(())
+    }
+
+    fn unquote(value: &str) -> String {
+        value.trim_matches('\'').to_owned()
+    }
+
     pub fn snapshot() -> anyhow::Result<SystemProxySnapshot> {
-        anyhow::bail!("system proxy management is only implemented on Windows")
+        let host = unquote(&get(&format!("{SCHEMA}.http"), "host")?);
+        let port = get(&format!("{SCHEMA}.http"), "port")?;
+        Ok(SystemProxySnapshot {
+            enabled: get(SCHEMA, "mode")? == "'manual'",
+            server: (!host.is_empty()).then(|| format!("{host}:{port}")),
+            bypass: Some(get(SCHEMA, "ignore-hosts")?),
+        })
     }
 
-    pub fn apply(_target: &SystemProxyTarget) -> anyhow::Result<()> {
-        anyhow::bail!("system proxy management is only implemented on Windows")
+    pub fn apply(target: &SystemProxyTarget) -> anyhow::Result<()> {
+        for scheme in ["http", "https", "socks"] {
+            set(&format!("{SCHEMA}.{scheme}"), "host", &format!("'{}'", target.host))?;
+            set(&format!("{SCHEMA}.{scheme}"), "port", &target.port.to_string())?;
+        }
+        set(
+            SCHEMA,
+            "ignore-hosts",
+            "['localhost', '127.0.0.0/8', '::1', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16']",
+        )?;
+        set(SCHEMA, "mode", "'manual'")
     }
 
-    pub fn restore(_snapshot: &SystemProxySnapshot) -> anyhow::Result<()> {
-        anyhow::bail!("system proxy management is only implemented on Windows")
+    pub fn restore(snapshot: &SystemProxySnapshot) -> anyhow::Result<()> {
+        let (host, port) = snapshot
+            .server
+            .as_deref()
+            .and_then(|server| server.rsplit_once(':'))
+            .unwrap_or(("", "0"));
+        for scheme in ["http", "https", "socks"] {
+            set(&format!("{SCHEMA}.{scheme}"), "host", &format!("'{host}'"))?;
+            set(&format!("{SCHEMA}.{scheme}"), "port", port)?;
+        }
+        if let Some(bypass) = &snapshot.bypass {
+            set(SCHEMA, "ignore-hosts", bypass)?;
+        }
+        set(SCHEMA, "mode", if snapshot.enabled { "'manual'" } else { "'none'" })
     }
 }
 

@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    fs,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -11,52 +10,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ElevationReason {
-    TunEnabled,
-    RouteOrDnsMutation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaunchRequirements {
-    pub requires_service: bool,
-    pub reasons: Vec<ElevationReason>,
-}
-
-impl LaunchRequirements {
-    pub fn normal() -> Self {
-        Self {
-            requires_service: false,
-            reasons: Vec::new(),
-        }
-    }
-
-    pub fn for_tun() -> Self {
-        Self {
-            requires_service: true,
-            reasons: vec![ElevationReason::TunEnabled],
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CoreOwner {
-    UiProcess {
-        pid: u32,
-    },
-    WindowsService {
-        service_name: String,
-        pid: Option<u32>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub enum CoreState {
     Stopped,
-    Starting { elevated: bool },
-    Running { elevated: bool, owner: CoreOwner },
-    NeedsService { reasons: Vec<ElevationReason> },
+    Running { pid: u32 },
     Stopping,
     Failed { message: String },
 }
@@ -66,19 +22,23 @@ pub struct CoreLaunchRequest {
     pub binary_path: PathBuf,
     pub runtime_dir: PathBuf,
     pub config_path: PathBuf,
+    /// Named pipe / unix socket for the controller; empty to rely on the
+    /// config's `external-controller` instead.
     pub core_pipe_path: String,
 }
 
 impl CoreLaunchRequest {
     pub fn clash_args(&self) -> Vec<String> {
-        vec![
+        let mut args = vec![
             "-d".to_owned(),
             self.runtime_dir.display().to_string(),
             "-f".to_owned(),
             config_arg(&self.runtime_dir, &self.config_path),
-            "--ext-ctl-pipe".to_owned(),
-            self.core_pipe_path.clone(),
-        ]
+        ];
+        if !self.core_pipe_path.is_empty() {
+            args.extend(["--ext-ctl-pipe".to_owned(), self.core_pipe_path.clone()]);
+        }
+        args
     }
 
     pub fn test_config_args(&self) -> Vec<String> {
@@ -124,7 +84,7 @@ pub struct CoreLog {
 impl CoreLog {
     const CAPACITY: usize = 500;
 
-    fn push(&self, line: String) {
+    pub(crate) fn push(&self, line: String) {
         let mut lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
         if lines.len() == Self::CAPACITY {
             lines.pop_front();
@@ -140,6 +100,66 @@ impl CoreLog {
         let lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
         lines.iter().skip(lines.len().saturating_sub(count)).cloned().collect()
     }
+
+    /// Message of the newest ERROR line among the last 30, for user display.
+    pub fn last_error(&self) -> Option<String> {
+        last_error(&self.tail(30))
+    }
+
+    /// Whether the TUN device came up: `Some(Ok)` once it did, `Some(Err)`
+    /// with the reason if it failed, `None` while undecided. clash-rs keeps
+    /// running without TUN on failure, so this is the only signal.
+    pub fn tun_status(&self) -> Option<Result<(), String>> {
+        for line in self.tail(CoreLog::CAPACITY).iter().rev() {
+            if line.contains("tun initialization") {
+                return Some(Err(last_error(std::slice::from_ref(line)).unwrap_or_else(|| line.clone())));
+            }
+            if ["setting up routes for tun", "route setup for existing tun", "tun started with fd"]
+                .iter()
+                .any(|marker| line.contains(marker))
+            {
+                return Some(Ok(()));
+            }
+        }
+        None
+    }
+
+    /// Wait for [`Self::tun_status`] to decide. The success marker is logged
+    /// *before* routes are installed (which can still fail), so success must
+    /// hold for a settle period. Undecided after `timeout` counts as success,
+    /// so a changed log format can't block connecting.
+    pub async fn wait_for_tun(&self, timeout: std::time::Duration) -> Result<(), String> {
+        const SETTLE: std::time::Duration = std::time::Duration::from_millis(2000);
+        let started = std::time::Instant::now();
+        let mut ok_since = None;
+        loop {
+            match self.tun_status() {
+                Some(Err(reason)) => return Err(reason),
+                Some(Ok(())) => {
+                    let since = *ok_since.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() >= SETTLE {
+                        return Ok(());
+                    }
+                }
+                None if started.elapsed() >= timeout => return Ok(()),
+                None => {}
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// The message of the newest ERROR log line, without timestamp/level/module:
+/// `26-11-02 15:46:29 ERROR clash_lib::app: bind failed: in use` → `bind failed: in use`.
+pub fn last_error(lines: &[String]) -> Option<String> {
+    let line = lines.iter().rev().find(|line| line.contains(" ERROR "))?;
+    let rest = line.split_once(" ERROR ")?.1.trim();
+    // Drop a leading `module::path:` or `span: file.rs:12:` prefix.
+    let message = match rest.split_once(": ") {
+        Some((prefix, message)) if !prefix.contains(' ') => message,
+        _ => rest,
+    };
+    Some(message.trim().to_owned()).filter(|m| !m.is_empty())
 }
 
 fn pump_lines(source: impl Read + Send + 'static, log: CoreLog) {
@@ -220,7 +240,6 @@ impl ClashProcessManager {
             anyhow::bail!("clash-rs core is already running");
         }
 
-        self.state = CoreState::Starting { elevated: false };
 
         let mut command = Command::new(&request.binary_path);
         command.args(request.clash_args());
@@ -232,6 +251,7 @@ impl ClashProcessManager {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        job::prepare(&mut command);
 
         let mut child = command.spawn()?;
         let job = match job::KillOnCloseJob::assign(&child) {
@@ -256,10 +276,7 @@ impl ClashProcessManager {
         let pid = child.id();
         self.child = Some(child);
         self.job = Some(job);
-        self.state = CoreState::Running {
-            elevated: false,
-            owner: CoreOwner::UiProcess { pid },
-        };
+        self.state = CoreState::Running { pid };
         Ok(self.state.clone())
     }
 
@@ -284,7 +301,7 @@ impl ClashProcessManager {
         let Some(child) = &mut self.child else {
             if !matches!(
                 self.state,
-                CoreState::NeedsService { .. } | CoreState::Failed { .. }
+                CoreState::Failed { .. }
             ) {
                 self.state = CoreState::Stopped;
             }
@@ -338,6 +355,8 @@ mod job {
         },
     };
 
+    pub fn prepare(_command: &mut std::process::Command) {}
+
     #[derive(Debug)]
     pub struct KillOnCloseJob(HANDLE);
 
@@ -378,10 +397,27 @@ mod job {
 
 #[cfg(not(windows))]
 mod job {
-    use std::process::Child;
+    use std::process::{Child, Command};
 
-    // Non-Windows hosts rely on explicit stop/Drop; a prctl/PR_SET_PDEATHSIG
-    // equivalent can be added with the Linux service.
+    /// Linux: ask the kernel to SIGKILL the core when its parent dies — the
+    /// equivalent of a kill-on-close job object.
+    #[cfg(target_os = "linux")]
+    pub fn prepare(command: &mut Command) {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: prctl is async-signal-safe; runs between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn prepare(_command: &mut Command) {}
+
     #[derive(Debug)]
     pub struct KillOnCloseJob;
 
@@ -413,79 +449,13 @@ fn hide_console_window(command: &mut Command) {
 #[cfg(not(windows))]
 fn hide_console_window(_command: &mut Command) {}
 
-pub fn write_core_pid(path: &Path, pid: u32) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, pid.to_string())?;
-    Ok(())
-}
-
-pub fn read_core_pid(path: &Path) -> Option<u32> {
-    let raw = fs::read_to_string(path).ok()?;
-    raw.trim().parse::<u32>().ok()
-}
-
-pub fn clear_core_pid(path: &Path) {
-    let _ = fs::remove_file(path);
-}
-
-#[cfg(windows)]
-pub fn pid_is_alive(pid: u32) -> bool {
-    use windows::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
-
-    unsafe {
-        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return false;
-        };
-        if handle.is_invalid() {
-            return false;
-        }
-        let mut code: u32 = 0;
-        let alive = GetExitCodeProcess(handle, &mut code as *mut u32).is_ok()
-            && code == STILL_ACTIVE.0 as u32;
-        let _ = CloseHandle(handle);
-        alive
-    }
-}
-
-#[cfg(not(windows))]
-pub fn pid_is_alive(_pid: u32) -> bool {
-    false
-}
-
-#[cfg(windows)]
-pub fn kill_pid(pid: u32) -> anyhow::Result<()> {
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, false, pid)
-            .map_err(|error| anyhow::anyhow!("OpenProcess({pid}) failed: {error}"))?;
-        if handle.is_invalid() {
-            anyhow::bail!("OpenProcess({pid}) returned invalid handle");
-        }
-        let result = TerminateProcess(handle, 1);
-        let _ = CloseHandle(handle);
-        result.map_err(|error| anyhow::anyhow!("TerminateProcess({pid}) failed: {error}"))?;
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-pub fn kill_pid(_pid: u32) -> anyhow::Result<()> {
-    anyhow::bail!("kill_pid only implemented on Windows")
-}
-
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use std::path::PathBuf;
 
     use super::CoreLaunchRequest;
 
+    #[cfg(windows)]
     #[test]
     fn launch_request_uses_relative_config_inside_runtime_dir() {
         let request = CoreLaunchRequest {
@@ -516,6 +486,33 @@ mod tests {
                 "generated.yaml",
                 "--test-config",
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::CoreLog;
+
+    fn log(lines: &[&str]) -> CoreLog {
+        let log = CoreLog::default();
+        for line in lines {
+            log.push((*line).to_owned());
+        }
+        log
+    }
+
+    #[test]
+    fn tun_status_reads_clash_rs_markers() {
+        assert_eq!(log(&["x INFO clash: starting"]).tun_status(), None);
+        assert_eq!(
+            log(&["x INFO runner.rs:273: setting up routes for tun utun1989"]).tun_status(),
+            Some(Ok(()))
+        );
+        assert_eq!(
+            log(&["26-11-02 16:20:22 ERROR clash-lib/src/proxy/tun/runner.rs:325: tun initialization failed: permission denied."])
+                .tun_status(),
+            Some(Err("tun initialization failed: permission denied.".to_owned()))
         );
     }
 }

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "pnpm build && cargo build --release -p clash-rs-desktop-service"
+  },
+  "bundle": {
+    "resources": {
+      "../../target/release/clash-rs-desktop-service.exe": "clash-rs-desktop-service.exe"
+    }
+  }
+}

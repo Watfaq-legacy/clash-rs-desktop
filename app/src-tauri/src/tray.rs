@@ -2,6 +2,7 @@
 
 use tauri::{
     AppHandle, Manager, Wry,
+    image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -32,7 +33,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
-    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+    let builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Choclite · 未连接")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -57,10 +58,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
                 show_main_window(tray.app_handle());
             }
         });
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
-    }
-    builder.build(app)?;
+    builder.icon(tray_icon(false)).build(app)?;
 
     app.manage(TrayItems { status, toggle });
     Ok(())
@@ -81,7 +79,18 @@ pub fn refresh(app: &AppHandle, view: &View) {
     let _ = items.toggle.set_enabled(toggle_enabled);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(format!("Choclite · {status}")));
+        // Colored when connected, grey otherwise — readable at a glance.
+        let _ = tray.set_icon(Some(tray_icon(view.phase == Phase::Connected)));
     }
+}
+
+fn tray_icon(connected: bool) -> Image<'static> {
+    let bytes: &'static [u8] = if connected {
+        include_bytes!("../icons/tray-on.png")
+    } else {
+        include_bytes!("../icons/tray-off.png")
+    };
+    Image::from_bytes(bytes).expect("bundled tray icon is a valid PNG")
 }
 
 pub fn show_main_window(app: &AppHandle) {

@@ -2,36 +2,34 @@
 
 Goal: a desktop client a non-technical user can run with one switch, with advanced options one level down (L0 → L3).
 
-| Level | Who | Surface |
-|---|---|---|
-| L0 | everyone | power switch, current node, subscription usage |
-| L1 | some | routing mode, launch at login, auto-connect, manual node pick |
-| L2 | power users | add rules without YAML (planned) |
-| L3 | experts | custom config overlay (YAML), logs |
+## Done
 
-## Done (phase 1 — system proxy mode)
+- Tauri 2 + Svelte 5 shell replacing the `windows-reactor` UI; ChocLite branding (icon, periwinkle palette), light/dark/system theme.
+- `Engine` orchestration with two backends (local child process, privileged service); crash-safe system proxy snapshot/restore; watchdog.
+- Core process in a kill-on-close job (Windows) / `PR_SET_PDEATHSIG` (Linux), output drained into a bounded log.
+- System proxy via the registry API + WinINet refresh (Windows) and gsettings (Linux).
+- Privileged service rewrite for TUN (Windows SCM + named pipe, Linux systemd + unix socket): only runs its own core, sanitises configs, concurrent clients, logs readable while busy, bounded reload, stale-route cleanup on Linux, wintun pinned by hash.
+- TUN health: a connection only counts once the TUN device is up (log-based, with settle period).
+- Subscription import/refresh, `subscription-userinfo` / `profile-title` / `profile-update-interval`, background auto-refresh.
+- Config generation: TUN DNS defaults, L2 site rules, overlays with list splicing; hot reload validated on a staging file.
+- Deep links (`choclite://`, `clash://` when unclaimed) with confirmation sheet.
+- Core update check/apply (also updates the service's copy).
+- Tray with connected/disconnected icons; launch at login; auto-connect; single instance; close-to-tray.
 
-- Tauri 2 + Svelte 5 shell replacing the `windows-reactor` UI.
-- `Engine` orchestration: connect/disconnect/watchdog, crash-safe system proxy snapshot/restore.
-- Core process in a kill-on-close job object; stdout/stderr drained into a bounded log (fixes pipe-fill stalls and orphaned cores; replaces PID-file kill, which could hit reused PIDs).
-- System proxy via the registry API with WinINet refresh (fixes values being lost on restore; browsers pick up changes immediately). LAN ranges bypassed.
-- Subscription import/refresh with `subscription-userinfo` / `profile-title`.
-- Config overlay `prepend-`/`append-` list splicing.
-- Tray (toggle/show/quit), single instance, close-to-tray, launch at login, auto-connect.
-- Screens: onboarding, home, nodes (latency test), settings, subscriptions, custom config, logs.
+## Verified
+
+- Windows: onboarding, first-run core download (static-CRT asset), connect/disconnect with exact proxy restore, crash recovery (app killed, core killed), node switching, latency test, subscription refresh, deep-link import via second instance, site rules hot reload (core PID unchanged, rule live in `/rules`), invalid custom config rejected without dropping the connection, dark theme, settings.
+- Linux (WSL, Debian): core tests, app build, system-proxy flow via unix-socket controller + gsettings, TUN via the systemd service (device + policy routes up, hot reload, clean teardown), TUN failure detection.
+
+## Not yet verified
+
+- Windows TUN end to end (needs a UAC click): service install, wintun download, TUN start/stop, re-adoption after app restart.
+- Linux `pkexec` prompt in a real desktop session (WSL has no polkit agent; tested with `sudo`).
 
 ## Next
 
-1. **TUN ("增强模式") via a rewritten service.** The legacy service accepts arbitrary `binary_path`/`config_path` from any authenticated user and runs them as LocalSystem — a local privilege escalation. Rewrite so that:
-   - the service only launches the core binary from its own admin-only directory;
-   - the UI sends config *content*; the service writes it to an admin-only dir and validates it;
-   - the core runs in a job object owned by the service; logs are captured and served over the pipe;
-   - requests carry an id and the pipe server handles clients concurrently (a slow start must not block status).
-   One UAC prompt to install; the toggle stays one click afterwards.
-2. App and tray icons from the Choclite brand; connected/disconnected tray states.
-3. `choclite://install-config?url=` deep link for one-click import from provider sites.
-4. Auto-refresh subscriptions on the provider's `profile-update-interval`.
-5. Core auto-update check (settings → about), using `binary_update`.
-6. L2 rule editor ("this site: proxy / direct") writing to the overlay.
-7. Hot reload via the controller instead of reconnecting on config changes.
-8. Linux: unix-socket controller, gsettings/env proxy backend, systemd/polkit for TUN.
+1. Verify Windows TUN with a UAC click; then installer smoke test on a clean VM.
+2. Code signing (Windows Authenticode) — also reduces SmartScreen friction for the service install.
+3. App self-update (Tauri updater) next to the existing core updater.
+4. Base64/v2ray-link subscriptions (currently only Clash YAML).
+5. KDE proxy backend (`kwriteconfig`) on Linux.

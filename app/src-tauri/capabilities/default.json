@@ -12,6 +12,7 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "clipboard-manager:allow-read-text",
+    "deep-link:default",
     "opener:default"
   ]
 }

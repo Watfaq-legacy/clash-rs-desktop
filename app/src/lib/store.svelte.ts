@@ -1,7 +1,15 @@
 import { listen } from "@tauri-apps/api/event";
-import { api, errorText, type Traffic, type View } from "./api";
+import { api, errorText, type DeepLinkImport, type Traffic, type View } from "./api";
 
-export type Screen = "home" | "nodes" | "settings" | "profiles" | "add" | "advanced" | "logs";
+export type Screen =
+  | "home"
+  | "nodes"
+  | "settings"
+  | "profiles"
+  | "add"
+  | "rules"
+  | "advanced"
+  | "logs";
 
 /** Where each screen's back button leads. */
 export const PARENT: Record<Screen, Screen> = {
@@ -10,11 +18,15 @@ export const PARENT: Record<Screen, Screen> = {
   settings: "home",
   profiles: "home",
   add: "profiles",
+  rules: "settings",
   advanced: "settings",
   logs: "settings",
 };
 
+export type Theme = "system" | "light" | "dark";
+
 class AppStore {
+  theme = $state<Theme>((localStorage.getItem("theme") as Theme | null) ?? "system");
   view = $state<View | null>(null);
   traffic = $state<Traffic>({ up: 0, down: 0 });
   screen = $state<Screen>("home");
@@ -39,7 +51,23 @@ class AppStore {
     await listen<Traffic>("traffic", (event) => {
       this.traffic = event.payload;
     });
+    await listen<DeepLinkImport>("deep-link-import", () => this.#takeImport());
     this.view = await api.getView();
+    await this.#takeImport();
+  }
+
+  /** A `clash://install-config` link waiting for the user's confirmation. */
+  pendingImport = $state<DeepLinkImport | null>(null);
+
+  async #takeImport() {
+    const link = await api.takeDeepLink();
+    if (link) this.pendingImport = link;
+  }
+
+  setTheme(theme: Theme) {
+    this.theme = theme;
+    localStorage.setItem("theme", theme);
+    applyTheme(theme);
   }
 
   go(screen: Screen) {
@@ -69,4 +97,10 @@ class AppStore {
   }
 }
 
+function applyTheme(theme: Theme) {
+  if (theme === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+}
+
 export const app = new AppStore();
+applyTheme(app.theme);

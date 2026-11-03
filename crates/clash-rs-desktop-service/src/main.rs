@@ -1,105 +1,61 @@
-use std::io::{self, BufRead};
+//! `clash-rs-desktop-service` — the privileged half of Choclite's TUN mode.
+//!
+//! ```text
+//! --install [--core <path>]   (elevated) copy into a root/admin-only dir,
+//!                             register and start the service
+//! --uninstall                 (elevated) stop and remove the service
+//! --service                   entry point used by the SCM / systemd
+//! --console                   run the server in the foreground (debug)
+//! ```
+//! Windows: SCM service + named pipe. Linux: systemd unit + unix socket.
 
-use clash_rs_desktop_core::service::{
-    CORE_PIPE, SERVICE_NAME, SERVICE_PIPE, ServiceCommand, ServiceResponse, ServiceSupervisor,
-    pipe_transport,
-};
-
+#[cfg(windows)]
+mod install;
+#[cfg(unix)]
+mod linux;
 #[cfg(windows)]
 mod scm;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    eprintln!("{SERVICE_NAME}");
-    eprintln!("service pipe: {SERVICE_PIPE}");
-    eprintln!("core pipe: {CORE_PIPE}");
+fn main() -> std::process::ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let flag = |name: &str| args.iter().any(|arg| arg == name);
+    let core = args
+        .iter()
+        .position(|arg| arg == "--core")
+        .and_then(|i| args.get(i + 1))
+        .map(std::path::PathBuf::from);
 
-    if std::env::args().any(|arg| arg == "--pipe-status") {
-        let client = pipe_transport::ServicePipeClient::new(SERVICE_PIPE);
-        let response = client.send(&ServiceCommand::Status).await?;
-        println!("{}", serde_json::to_string(&response)?);
-        return Ok(());
-    }
+    let result = if flag("--service") {
+        run_service()
+    } else if flag("--install") {
+        install(core)
+    } else if flag("--uninstall") {
+        uninstall()
+    } else if flag("--console") {
+        run_console()
+    } else {
+        eprintln!("usage: --install [--core <path>] | --uninstall | --service | --console");
+        return std::process::ExitCode::from(2);
+    };
 
-    #[cfg(windows)]
-    if std::env::args().any(|arg| arg == "--install") {
-        scm::install_service()?;
-        println!("installed {SERVICE_NAME}");
-        return Ok(());
-    }
-
-    // Install (idempotently) and immediately start, under a single elevation so
-    // the UI's one-click "Install & start" reaches a Running service without a
-    // second UAC prompt.
-    #[cfg(windows)]
-    if std::env::args().any(|arg| arg == "--install-start") {
-        scm::install_service()?;
-        scm::start_service()?;
-        println!("installed and started {SERVICE_NAME}");
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    if std::env::args().any(|arg| arg == "--uninstall") {
-        scm::uninstall_service()?;
-        println!("uninstalled {SERVICE_NAME}");
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    if std::env::args().any(|arg| arg == "--start-service") {
-        scm::start_service()?;
-        println!("started {SERVICE_NAME}");
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    if std::env::args().any(|arg| arg == "--stop-service") {
-        scm::stop_service()?;
-        println!("stopped {SERVICE_NAME}");
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    if std::env::args().any(|arg| arg == "--service-status") {
-        println!("{}", scm::service_status_text()?);
-        return Ok(());
-    }
-
-    #[cfg(windows)]
-    if std::env::args().any(|arg| arg == "--service") {
-        return scm::run_service_dispatcher();
-    }
-
-    if std::env::args().any(|arg| arg == "--pipe") {
-        eprintln!("serving line-delimited JSON commands on service pipe");
-        return pipe_transport::run_pipe_server(SERVICE_PIPE).await;
-    }
-
-    eprintln!("reading line-delimited JSON service commands from stdin");
-
-    run_stdin_host()
-}
-
-fn run_stdin_host() -> anyhow::Result<()> {
-    let stdin = io::stdin();
-    let mut supervisor = ServiceSupervisor::new();
-
-    for line in stdin.lock().lines() {
-        let line = line?;
-        if line.trim().is_empty() {
-            continue;
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            // Elevated runs have no visible console; keep a trace.
+            log(&format!("error: {error:#}"));
+            eprintln!("error: {error:#}");
+            std::process::ExitCode::FAILURE
         }
-
-        let response = match serde_json::from_str::<ServiceCommand>(&line) {
-            Ok(command) => supervisor.handle(command),
-            Err(error) => ServiceResponse::Error {
-                message: format!("invalid service command: {error}"),
-            },
-        };
-
-        println!("{}", serde_json::to_string(&response)?);
     }
-
-    Ok(())
 }
+
+#[cfg(windows)]
+use {install::install, install::log, install::uninstall, scm::run_console};
+
+#[cfg(windows)]
+fn run_service() -> anyhow::Result<()> {
+    scm::run_dispatcher()
+}
+
+#[cfg(unix)]
+use linux::{install, log, run as run_service, run as run_console, uninstall};

@@ -13,45 +13,67 @@
   --font: "Twemoji Country Flags", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
     "PingFang SC", system-ui, sans-serif;
 
-  /* Brand: cocoa + caramel. */
-  --accent: #c9773f;
-  --accent-2: #e8a666;
-  --accent-soft: rgb(201 119 63 / 0.14);
+  /* Brand: ChocLite periwinkle (from the iOS app icon gradient). */
+  --accent: #5f6de6;
+  --accent-2: #9ba6f7;
+  --accent-soft: rgb(95 109 230 / 0.13);
   --on-accent: #fff;
 
-  --good: #2fb67c;
+  --good: #22b07d;
   --ok: #e0a53a;
-  --bad: #e2574c;
+  --bad: #e5484d;
 
-  --bg: #faf6f2;
-  --bg-glow: #fde9d7;
+  --bg: #f6f7fc;
+  --bg-glow: #dfe4ff;
   --surface: #ffffff;
-  --surface-2: #f3ece5;
-  --line: rgb(80 50 30 / 0.09);
-  --text: #2a1f19;
-  --text-2: #7b6a5f;
-  --text-3: #a99a8f;
-  --shadow: 0 1px 2px rgb(60 30 10 / 0.05), 0 8px 24px rgb(60 30 10 / 0.07);
+  --surface-2: #eef0f8;
+  --line: rgb(40 50 110 / 0.09);
+  --text: #1b1e33;
+  --text-2: #62677f;
+  --text-3: #9a9eb5;
+  --shadow: 0 1px 2px rgb(30 40 100 / 0.05), 0 8px 24px rgb(30 40 100 / 0.07);
 
   --radius: 16px;
   --radius-sm: 10px;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --accent: #e08b4f;
-    --accent-2: #f2b37a;
-    --accent-soft: rgb(224 139 79 / 0.16);
+/* Dark palette: follows the system unless the user picked a theme
+   (`data-theme` on <html>). Keep both blocks in sync. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --accent: #8390f5;
+  --accent-2: #aeb7fb;
+  --accent-soft: rgb(131 144 245 / 0.16);
+  --bg: #0e0f1d;
+  --bg-glow: #252b6b;
+  --surface: #171a2e;
+  --surface-2: #22253d;
+  --line: rgb(210 215 255 / 0.08);
+  --text: #eceefb;
+  --text-2: #a4a8c4;
+  --text-3: #6d7191;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
+}
 
-    --bg: #141010;
-    --bg-glow: #3a2216;
-    --surface: #1f1918;
-    --surface-2: #2a2321;
-    --line: rgb(255 230 210 / 0.07);
-    --text: #f6ece6;
-    --text-2: #b3a39a;
-    --text-3: #7b6d66;
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --accent: #8390f5;
+    --accent-2: #aeb7fb;
+    --accent-soft: rgb(131 144 245 / 0.16);
+
+    --bg: #0e0f1d;
+    --bg-glow: #252b6b;
+    --surface: #171a2e;
+    --surface-2: #22253d;
+    --line: rgb(210 215 255 / 0.08);
+    --text: #eceefb;
+    --text-2: #a4a8c4;
+    --text-3: #6d7191;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
   }
 }

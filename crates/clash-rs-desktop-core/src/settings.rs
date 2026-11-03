@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CoreUpdateSettings, SystemProxyTarget, UpdateChannel, WindowsArch};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     pub updates: CoreUpdateSettings,
     pub system_proxy: SystemProxySettings,
@@ -16,6 +16,31 @@ pub struct AppSettings {
     /// Connect as soon as the app starts.
     #[serde(default)]
     pub auto_connect: bool,
+    /// Simple per-site rules (L2), applied before the subscription's rules.
+    #[serde(default)]
+    pub custom_rules: Vec<crate::generate::CustomRule>,
+    /// Re-download remote profiles on the provider's interval.
+    #[serde(default = "default_true")]
+    pub auto_update_subscriptions: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            updates: CoreUpdateSettings::default(),
+            system_proxy: SystemProxySettings::default(),
+            tun: TunLaunchPolicy::default(),
+            connect_mode: ConnectMode::default(),
+            routing_mode: RoutingMode::default(),
+            auto_connect: false,
+            custom_rules: Vec::new(),
+            auto_update_subscriptions: true,
+        }
+    }
 }
 
 /// How traffic reaches the core.

@@ -2,7 +2,10 @@
   import "../app.css";
   import { fly, fade } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
+  import { api } from "$lib/api";
   import Icon from "$lib/components/Icon.svelte";
+  import Sheet from "$lib/components/Sheet.svelte";
+  import Rules from "$lib/screens/Rules.svelte";
   import Advanced from "$lib/screens/Advanced.svelte";
   import Home from "$lib/screens/Home.svelte";
   import Logs from "$lib/screens/Logs.svelte";
@@ -14,9 +17,42 @@
 
   $effect(() => {
     app.init();
+    // Surface unexpected UI errors instead of failing silently.
+    const onError = (event: ErrorEvent) => app.showToast(`界面出错：${event.message}`, "error");
+    const onRejection = (event: PromiseRejectionEvent) =>
+      app.showToast(`界面出错：${String(event.reason?.message ?? event.reason)}`, "error");
+    window.addEventListener("error", onError);
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => {
+      window.removeEventListener("error", onError);
+      window.removeEventListener("unhandledrejection", onRejection);
+    };
   });
 
   const onboarding = $derived(app.view !== null && app.view.profiles.length === 0);
+  const isWindows = navigator.userAgent.includes("Windows");
+
+  let installing = $state(false);
+  let importing = $state(false);
+
+  async function install() {
+    installing = true;
+    await app.run(() => api.installTunSupport());
+    installing = false;
+  }
+
+  async function confirmImport() {
+    const link = app.pendingImport;
+    if (!link) return;
+    importing = true;
+    const view = await app.run(() => api.addSubscription(link.url, link.name));
+    importing = false;
+    app.pendingImport = null;
+    if (view) {
+      app.showToast("订阅已导入");
+      app.back("home");
+    }
+  }
   const slide = (node: Element) =>
     fly(node, { x: app.forward ? 40 : -40, duration: 260, easing: cubicOut, opacity: 0 });
 </script>
@@ -37,6 +73,8 @@
           <Profiles />
         {:else if app.screen === "add"}
           <Onboarding onBack={() => app.back()} />
+        {:else if app.screen === "rules"}
+          <Rules />
         {:else if app.screen === "advanced"}
           <Advanced />
         {:else if app.screen === "logs"}
@@ -46,6 +84,44 @@
         {/if}
       </div>
     {/key}
+  {/if}
+
+  {#if app.view?.needsInstall}
+    <Sheet
+      title={app.view.needsInstall === "outdated" ? "更新增强模式组件" : "开启增强模式"}
+      onclose={() => api.dismissError()}
+    >
+      <p>增强模式会接管电脑上<b>所有程序</b>的网络流量，包括不支持系统代理的游戏和命令行工具。</p>
+      <p>
+        {#if isWindows}
+          需要安装一个后台组件，Windows 会弹出一次管理员授权，之后开关就不再需要授权。
+        {:else}
+          需要为内核授予一次网络权限，系统会请求一次管理员密码。
+        {/if}
+      </p>
+      {#snippet actions()}
+        <button class="ghost" onclick={() => api.dismissError()} disabled={installing}>取消</button>
+        <button class="primary" onclick={install} disabled={installing}>
+          {installing ? "等待授权…" : "授权并开启"}
+        </button>
+      {/snippet}
+    </Sheet>
+  {/if}
+
+  {#if app.pendingImport}
+    <Sheet title="导入订阅" onclose={() => (app.pendingImport = null)}>
+      <p>网页请求导入一个订阅{app.pendingImport.name ? `「${app.pendingImport.name}」` : ""}：</p>
+      <p class="link">{app.pendingImport.url}</p>
+      <p>只导入你信任的服务商提供的订阅。</p>
+      {#snippet actions()}
+        <button class="ghost" onclick={() => (app.pendingImport = null)} disabled={importing}>
+          取消
+        </button>
+        <button class="primary" onclick={confirmImport} disabled={importing}>
+          {importing ? "正在导入…" : "导入并使用"}
+        </button>
+      {/snippet}
+    </Sheet>
   {/if}
 
   {#if app.toast}
@@ -81,6 +157,15 @@
   .page {
     position: absolute;
     inset: 0;
+  }
+
+  .link {
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: var(--surface-2);
+    font-size: 12px;
+    word-break: break-all;
+    user-select: text;
   }
 
   .toast {

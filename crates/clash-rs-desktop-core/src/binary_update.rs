@@ -43,11 +43,16 @@ pub enum WindowsArch {
 }
 
 impl WindowsArch {
+    /// Target triple used in release asset names. (The type predates Linux
+    /// support; on Linux it picks the fully static musl builds.)
     pub fn release_name(&self) -> &'static str {
-        match self {
-            Self::X64 => "x86_64-pc-windows-msvc",
-            Self::Arm64 => "aarch64-pc-windows-msvc",
-            Self::X86 => "i686-pc-windows-msvc",
+        match (self, cfg!(windows)) {
+            (Self::X64, true) => "x86_64-pc-windows-msvc",
+            (Self::Arm64, true) => "aarch64-pc-windows-msvc",
+            (Self::X86, true) => "i686-pc-windows-msvc",
+            (Self::X64, false) => "x86_64-unknown-linux-musl",
+            (Self::Arm64, false) => "aarch64-unknown-linux-musl",
+            (Self::X86, false) => "i686-unknown-linux-musl",
         }
     }
 
@@ -127,8 +132,8 @@ pub struct ManagedCoreFiles {
 impl ManagedCoreFiles {
     pub fn from_paths(paths: &AppPaths) -> Self {
         Self {
-            current_binary: paths.core_dir.join("clash-rs.exe"),
-            rollback_binary: paths.core_dir.join("clash-rs.rollback.exe"),
+            current_binary: paths.core_dir.join(format!("clash-rs{}", std::env::consts::EXE_SUFFIX)),
+            rollback_binary: paths.core_dir.join(format!("clash-rs.rollback{}", std::env::consts::EXE_SUFFIX)),
             wintun_dll: paths.core_dir.join("wintun.dll"),
             active_metadata: paths.active_core_metadata_path(),
         }
@@ -253,6 +258,11 @@ impl CoreUpdateManager {
         }
 
         fs::write(&files.current_binary, binary)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&files.current_binary, fs::Permissions::from_mode(0o755))?;
+        }
 
         let active = ActiveCore {
             channel: candidate.channel,
@@ -300,13 +310,19 @@ pub fn select_release_candidate(
     release: &GitHubRelease,
 ) -> Option<ReleaseCandidate> {
     let arch_name = arch.release_name();
+    let ext = std::env::consts::EXE_SUFFIX;
 
-    let direct_exe = release.assets.iter().find(|asset| {
-        let name = asset.name.to_ascii_lowercase();
-        name.contains(arch_name)
-            && name.ends_with(".exe")
-            && !name.contains(".pdb")
-            && !name.contains(".sig")
+    // Prefer the static-CRT build: it runs without the VC++ runtime installed.
+    let direct_exe = [
+        format!("clash-rs-{arch_name}-static-crt{ext}"),
+        format!("clash-rs-{arch_name}{ext}"),
+    ]
+    .iter()
+    .find_map(|wanted| {
+        release
+            .assets
+            .iter()
+            .find(|asset| asset.name.eq_ignore_ascii_case(wanted))
     });
 
     let zipped = release
@@ -399,18 +415,20 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn version_from_tag(tag: &str) -> String {
+pub fn version_from_tag(tag: &str) -> String {
     tag.strip_prefix('v').unwrap_or(tag).to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveCore, GitHubRelease, GitHubReleaseAsset, OffsetDateTime, ReleaseCandidate,
-        UpdateChannel, UpdateDecision, WindowsArch, decide_update, select_release_candidate,
+        ActiveCore, OffsetDateTime, ReleaseCandidate, UpdateChannel, UpdateDecision, decide_update,
         version_from_tag,
     };
+    #[cfg(windows)]
+    use super::{GitHubRelease, GitHubReleaseAsset, WindowsArch, select_release_candidate};
 
+    #[cfg(windows)]
     #[test]
     fn selects_matching_windows_asset() {
         let release = GitHubRelease {

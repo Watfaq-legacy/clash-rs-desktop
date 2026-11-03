@@ -1,15 +1,17 @@
 <script lang="ts">
   import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-  import { api, type RoutingMode } from "$lib/api";
+  import { api, type ConnectMode, type CoreUpdateInfo, type RoutingMode } from "$lib/api";
   import Group from "$lib/components/Group.svelte";
   import Row from "$lib/components/Row.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
-  import { app } from "$lib/store.svelte";
+  import { app, type Theme } from "$lib/store.svelte";
 
   const view = $derived(app.view!);
   let launchAtLogin = $state(false);
+  let update = $state<CoreUpdateInfo | null>(null);
+  let updating = $state<"checking" | "downloading" | null>(null);
 
   $effect(() => {
     isEnabled()
@@ -17,6 +19,14 @@
       .catch(() => {});
   });
 
+  const CONNECT_MODES: { value: ConnectMode; label: string }[] = [
+    { value: "system-proxy", label: "系统代理" },
+    { value: "tun", label: "增强模式" },
+  ];
+  const CONNECT_HINTS: Record<ConnectMode, string> = {
+    "system-proxy": "浏览器和大多数软件可用，无需管理员权限。",
+    tun: "接管所有程序的流量，包括游戏和命令行工具。首次开启需要一次管理员授权。",
+  };
   const MODES: { value: RoutingMode; label: string }[] = [
     { value: "rule", label: "智能分流" },
     { value: "global", label: "全部代理" },
@@ -27,17 +37,54 @@
     global: "所有流量都经过代理节点。",
     direct: "所有流量都不经过代理，相当于暂停使用。",
   };
+  const THEMES: { value: Theme; label: string }[] = [
+    { value: "system", label: "跟随系统" },
+    { value: "light", label: "浅色" },
+    { value: "dark", label: "深色" },
+  ];
 
   async function setLaunchAtLogin(on: boolean) {
     const ok = await app.run(() => (on ? enable() : disable()));
     if (ok !== null) launchAtLogin = on;
   }
+
+  async function checkUpdate() {
+    updating = "checking";
+    update = await app.run(() => api.checkCoreUpdate());
+    updating = null;
+    if (update && !update.available) app.showToast("已是最新版本");
+  }
+
+  async function installUpdate() {
+    updating = "downloading";
+    const result = await app.run(() => api.updateCore());
+    updating = null;
+    if (result) {
+      update = null;
+      app.showToast(`内核已更新到 ${result.coreVersion}`);
+    }
+  }
+
+  const reconnectNote = $derived(
+    view.phase === "connected" && view.connectedMode && view.connectedMode !== view.connectMode,
+  );
 </script>
 
 <div class="screen">
   <TitleBar title="设置" onBack={() => app.back()} />
 
   <div class="scroll">
+    <Group title="连接方式" footer={CONNECT_HINTS[view.connectMode]}>
+      <div class="pad">
+        <Segmented
+          options={CONNECT_MODES}
+          value={view.connectMode}
+          onchange={(mode) => app.run(() => api.setConnectMode(mode))}
+        />
+      </div>
+    </Group>
+    {#if reconnectNote}<p class="note">将在下次连接时生效</p>{/if}
+
     <Group title="分流模式" footer={MODE_HINTS[view.routingMode]}>
       <div class="pad">
         <Segmented
@@ -67,18 +114,55 @@
 
     <Group title="订阅">
       <Row label="管理订阅" hint="{view.profiles.length} 个订阅" onclick={() => app.go("profiles")} />
+      <Row label="自动更新订阅" hint="按服务商建议的间隔，默认每 12 小时">
+        {#snippet trailing()}
+          <Switch
+            label="自动更新订阅"
+            checked={view.autoUpdateSubscriptions}
+            onchange={(on) => app.run(() => api.setAutoUpdateSubscriptions(on))}
+          />
+        {/snippet}
+      </Row>
+    </Group>
+
+    <Group title="外观">
+      <div class="pad">
+        <Segmented options={THEMES} value={app.theme} onchange={(theme) => app.setTheme(theme)} />
+      </div>
     </Group>
 
     <Group title="高级" footer="这些选项面向熟悉 Clash 配置的用户。">
-      <Row label="自定义配置" hint="在订阅之上追加规则或修改设置" onclick={() => app.go("advanced")} />
+      <Row
+        label="网站规则"
+        hint={view.customRules.length ? `${view.customRules.length} 条规则` : "指定网站走代理、直连或拦截"}
+        onclick={() => app.go("rules")}
+      />
+      <Row label="自定义配置" hint="在订阅之上修改任意 Clash 设置" onclick={() => app.go("advanced")} />
       <Row label="运行日志" onclick={() => app.go("logs")} />
     </Group>
 
     <Group title="关于">
-      <Row label="版本">
-        {#snippet trailing()}<span class="muted num">0.1.0</span>{/snippet}
+      <Row label="Choclite">
+        {#snippet trailing()}<span class="muted num">{view.appVersion}</span>{/snippet}
       </Row>
-      {#if view.port}
+      <Row
+        label="clash-rs 内核"
+        hint={update?.available ? `新版本 ${update.latest} 可用` : undefined}
+      >
+        {#snippet trailing()}
+          <span class="muted num">{view.coreVersion ?? "未安装"}</span>
+          {#if update?.available}
+            <button class="mini" onclick={installUpdate} disabled={!!updating}>
+              {updating === "downloading" ? "更新中…" : "更新"}
+            </button>
+          {:else}
+            <button class="mini ghost" onclick={checkUpdate} disabled={!!updating}>
+              {updating === "checking" ? "检查中…" : "检查更新"}
+            </button>
+          {/if}
+        {/snippet}
+      </Row>
+      {#if view.port && view.connectedMode === "system-proxy"}
         <Row label="本地代理端口" hint="供其他软件手动设置代理使用">
           {#snippet trailing()}<span class="muted num">127.0.0.1:{view.port}</span>{/snippet}
         </Row>
@@ -108,9 +192,29 @@
   .pad {
     padding: 10px;
   }
+  .note {
+    margin: -10px 4px 14px;
+    font-size: 12px;
+    color: var(--accent);
+  }
   .muted {
     color: var(--text-3);
     font-size: 13px;
+  }
+  .mini {
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--on-accent);
+    background: var(--accent);
+  }
+  .mini.ghost {
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  .mini:disabled {
+    opacity: 0.6;
   }
   .credit {
     text-align: center;

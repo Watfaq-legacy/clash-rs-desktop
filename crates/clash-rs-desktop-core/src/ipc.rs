@@ -396,7 +396,6 @@ fn percent_encode(value: &str, space_as_plus: bool) -> String {
     encoded
 }
 
-#[cfg(windows)]
 mod platform {
     use anyhow::Context as _;
     use bytes::Bytes;
@@ -405,8 +404,20 @@ mod platform {
     use hyper::{Request, client::conn::http1, header};
     use hyper_util::rt::TokioIo;
     use serde::de::DeserializeOwned;
-    use tokio::net::windows::named_pipe::ClientOptions;
     use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    #[cfg(windows)]
+    type IpcStream = tokio::net::windows::named_pipe::NamedPipeClient;
+    #[cfg(unix)]
+    type IpcStream = tokio::net::UnixStream;
+
+    /// Windows named pipe or unix domain socket, by platform.
+    async fn open_ipc(path: &str) -> anyhow::Result<IpcStream> {
+        #[cfg(windows)]
+        let stream = tokio::net::windows::named_pipe::ClientOptions::new().open(path);
+        #[cfg(unix)]
+        let stream = tokio::net::UnixStream::connect(path).await;
+        stream.with_context(|| format!("failed to open Clash controller endpoint {path}"))
+    }
 
     use super::ClashIpcClientConfig;
 
@@ -455,11 +466,7 @@ mod platform {
             return Ok(serde_json::from_slice(&bytes)?);
         }
 
-        let client = ClientOptions::new()
-            .open(&config.pipe_path)
-            .with_context(|| {
-                format!("failed to open Clash controller pipe {}", config.pipe_path)
-            })?;
+        let client = open_ipc(&config.pipe_path).await?;
         let io = TokioIo::new(client);
         let (mut sender, connection) = http1::handshake(io)
             .await
@@ -573,12 +580,10 @@ mod platform {
         config: &ClashIpcClientConfig,
     ) -> anyhow::Result<
         tokio_tungstenite::WebSocketStream<
-            tokio::net::windows::named_pipe::NamedPipeClient,
+            IpcStream,
         >,
     > {
-        let client = ClientOptions::new()
-            .open(&config.pipe_path)
-            .with_context(|| format!("failed to open Clash controller pipe {}", config.pipe_path))?;
+        let client = open_ipc(&config.pipe_path).await?;
 
         let mut request = format!("ws://localhost{path}").into_client_request()?;
         if let Some(secret) = &config.auth_secret {
@@ -684,42 +689,6 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
-mod platform {
-    use serde::de::DeserializeOwned;
-
-    use super::ClashIpcClientConfig;
-
-    pub async fn request_json<T>(
-        _config: &ClashIpcClientConfig,
-        _method: &str,
-        _path: &str,
-        _body: Option<Vec<u8>>,
-    ) -> anyhow::Result<T>
-    where
-        T: DeserializeOwned,
-    {
-        anyhow::bail!("Clash IPC over Unix domain sockets is not implemented yet")
-    }
-
-    pub async fn websocket_text_messages(
-        _config: &ClashIpcClientConfig,
-        _path: &str,
-        _max_messages: usize,
-        _timeout: std::time::Duration,
-    ) -> anyhow::Result<Vec<String>> {
-        anyhow::bail!("Clash IPC over Unix domain sockets is not implemented yet")
-    }
-
-    pub async fn stream_websocket_text(
-        _config: &ClashIpcClientConfig,
-        _path: &str,
-        _on_message: impl FnMut(String),
-        _stop: tokio::sync::watch::Receiver<bool>,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("Clash IPC over Unix domain sockets is not implemented yet")
-    }
-}
 
 #[cfg(test)]
 mod tests {

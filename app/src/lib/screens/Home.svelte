@@ -85,7 +85,12 @@
     <section class="hero">
       <div class="status" class:on={phase === "connected"}>
         <h1>{status.title}</h1>
-        <p class="num">{status.sub}</p>
+        <p class="num">
+          {#if phase === "connected" && view.connectedMode === "tun"}
+            <span class="chip" title="所有程序的流量都经过 Choclite">增强模式</span>
+          {/if}
+          {status.sub}
+        </p>
       </div>
 
       <PowerButton {phase} onclick={toggle} />
@@ -186,6 +191,18 @@
     min-height: 20px;
     color: var(--text-2);
     font-size: 13px;
+  }
+
+  .chip {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    vertical-align: 1px;
   }
 
   .speeds {

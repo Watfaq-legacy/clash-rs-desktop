@@ -6,7 +6,10 @@
 
 use std::sync::Mutex;
 
-use clash_rs_desktop_core::{ConnectMode, Engine, RoutingMode, SubscriptionInfo, UserProfile};
+use clash_rs_desktop_core::{
+    ConnectMode, CustomRule, Engine, NeedsServiceInstall, RoutingMode, SubscriptionInfo,
+    UserProfile,
+};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::watch;
@@ -46,37 +49,48 @@ pub struct View {
     pub step: Option<String>,
     /// Last user-facing error; cleared by the next action.
     pub error: Option<String>,
+    /// Set when TUN needs the one-time privileged install.
+    pub needs_install: Option<NeedsServiceInstall>,
     /// Unix millis when the current connection came up.
     pub connected_since: Option<i64>,
     pub port: Option<u16>,
     pub profiles: Vec<ProfileView>,
     pub routing_mode: RoutingMode,
     pub connect_mode: ConnectMode,
+    /// Mode of the live connection (settings may have changed since).
+    pub connected_mode: Option<ConnectMode>,
     pub auto_connect: bool,
+    pub auto_update_subscriptions: bool,
+    pub custom_rules: Vec<CustomRule>,
+    pub core_version: Option<String>,
+    pub app_version: &'static str,
 }
 
 impl AppState {
     pub fn new(engine: Engine) -> Self {
-        let view = View {
+        let mut view = View {
             phase: Phase::Disconnected,
             step: None,
             error: None,
+            needs_install: None,
             connected_since: None,
             port: None,
             profiles: Vec::new(),
             routing_mode: RoutingMode::default(),
             connect_mode: ConnectMode::default(),
+            connected_mode: None,
             auto_connect: false,
+            auto_update_subscriptions: true,
+            custom_rules: Vec::new(),
+            core_version: None,
+            app_version: env!("CARGO_PKG_VERSION"),
         };
-        let state = Self {
+        sync_from_engine(&mut view, &engine);
+        Self {
             engine: tokio::sync::Mutex::new(engine),
             view: Mutex::new(view),
             traffic_stop: Mutex::new(None),
-        };
-        if let Ok(engine) = state.engine.try_lock() {
-            state.update(|view| sync_from_engine(view, &engine));
         }
-        state
     }
 
     pub fn view(&self) -> View {
@@ -96,7 +110,11 @@ pub fn sync_from_engine(view: &mut View, engine: &Engine) {
     view.routing_mode = settings.routing_mode;
     view.connect_mode = settings.connect_mode;
     view.auto_connect = settings.auto_connect;
+    view.auto_update_subscriptions = settings.auto_update_subscriptions;
+    view.custom_rules = settings.custom_rules.clone();
+    view.connected_mode = engine.connected_mode();
     view.port = engine.mixed_port();
+    view.core_version = engine.core_version();
     view.profiles = engine
         .profiles()
         .profiles()

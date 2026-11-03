@@ -38,7 +38,7 @@
   <main>
     {#if !onBack}
       <div class="hello">
-        <div class="logo"></div>
+        <img class="logo" src="/brand/logo.png" alt="" draggable="false" />
         <h1>欢迎使用 Choclite</h1>
         <p>粘贴你的订阅链接，一键开始</p>
       </div>
@@ -90,12 +90,11 @@
     color: var(--text-2);
   }
   .logo {
-    width: 72px;
-    height: 72px;
-    margin: 0 auto 22px;
-    border-radius: 22px;
-    background: linear-gradient(145deg, var(--accent-2), var(--accent));
-    box-shadow: 0 16px 40px -10px var(--accent);
+    display: block;
+    width: 88px;
+    height: 88px;
+    margin: 0 auto 18px;
+    filter: drop-shadow(0 14px 24px rgb(95 109 230 / 0.35));
   }
   h1 {
     margin: 0;

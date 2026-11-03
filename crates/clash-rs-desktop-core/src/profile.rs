@@ -39,6 +39,9 @@ pub struct UserProfile {
     /// Unix seconds of the last successful download, for remote profiles.
     #[serde(default)]
     pub updated_at: Option<i64>,
+    /// Provider-suggested refresh interval (`profile-update-interval`).
+    #[serde(default)]
+    pub update_interval_hours: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +85,7 @@ pub struct FetchedSubscription {
     pub body: String,
     pub info: Option<SubscriptionInfo>,
     pub suggested_name: Option<String>,
+    pub update_interval_hours: Option<u32>,
 }
 
 /// Download a subscription URL and check it is a Clash config.
@@ -122,6 +126,9 @@ pub async fn fetch_subscription(url: &str) -> anyhow::Result<FetchedSubscription
         body,
         info: header("subscription-userinfo").and_then(SubscriptionInfo::parse_header),
         suggested_name,
+        update_interval_hours: header("profile-update-interval")
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .filter(|h| *h > 0),
     })
 }
 
@@ -259,6 +266,7 @@ impl ProfileStore {
             active: false,
             subscription: None,
             updated_at: None,
+            update_interval_hours: None,
         };
 
         self.upsert(profile);
@@ -292,6 +300,7 @@ impl ProfileStore {
             active: false,
             subscription: None,
             updated_at: None,
+            update_interval_hours: None,
         };
 
         self.upsert(profile);
@@ -351,6 +360,7 @@ impl ProfileStore {
             active: false,
             subscription: fetched.info,
             updated_at: Some(unix_now()),
+            update_interval_hours: fetched.update_interval_hours,
         };
 
         self.upsert(profile);
@@ -381,7 +391,29 @@ impl ProfileStore {
 
         profile.subscription = fetched.info.or(profile.subscription.take());
         profile.updated_at = Some(unix_now());
+        if fetched.update_interval_hours.is_some() {
+            profile.update_interval_hours = fetched.update_interval_hours;
+        }
         Ok(())
+    }
+
+    /// Remote profiles whose refresh interval (provider's, else 12h) elapsed.
+    pub fn due_for_refresh(&self) -> Vec<(ProfileId, String)> {
+        let now = unix_now();
+        self.manifest
+            .profiles
+            .iter()
+            .filter_map(|profile| {
+                let ProfileSource::RemoteUrl { url, .. } = &profile.source else {
+                    return None;
+                };
+                let hours = i64::from(profile.update_interval_hours.unwrap_or(12));
+                let due = profile
+                    .updated_at
+                    .is_none_or(|at| now - at >= hours * 3600);
+                due.then(|| (profile.id.clone(), url.clone()))
+            })
+            .collect()
     }
 
     pub fn profile(&self, id: &ProfileId) -> Option<&UserProfile> {
@@ -538,6 +570,7 @@ mod tests {
             source: ProfileSource::InlineTemplate,
             source_path: temp.join("source.yaml"),
             generated_path: temp.join("generated.yaml"),
+            update_interval_hours: None,
             profile_override_path: None,
             active: false,
             subscription: None,
@@ -564,6 +597,36 @@ mod tests {
         assert_eq!(id.0, "default");
         assert!(store.active_profile().unwrap().source_path.exists());
         assert!(store.active_profile().unwrap().active);
+    }
+
+    #[test]
+    fn remote_profiles_are_due_after_their_interval() {
+        let temp = unique_temp_dir();
+        let mut store = ProfileStore::load(temp.join("profiles.json")).unwrap();
+        let now = super::unix_now();
+        let remote = |id: &str, updated_at: Option<i64>, hours: Option<u32>| UserProfile {
+            id: ProfileId(id.to_owned()),
+            name: id.to_owned(),
+            source: ProfileSource::RemoteUrl {
+                url: format!("https://example.com/{id}"),
+                headers: Vec::new(),
+            },
+            source_path: temp.join(id),
+            generated_path: temp.join(id),
+            profile_override_path: None,
+            active: false,
+            subscription: None,
+            updated_at,
+            update_interval_hours: hours,
+        };
+        store.upsert(remote("fresh", Some(now - 3600), None));
+        store.upsert(remote("stale", Some(now - 13 * 3600), None));
+        store.upsert(remote("hourly", Some(now - 2 * 3600), Some(1)));
+        store.upsert(remote("never", None, None));
+
+        let mut due: Vec<String> = store.due_for_refresh().into_iter().map(|(id, _)| id.0).collect();
+        due.sort();
+        assert_eq!(due, ["hourly", "never", "stale"]);
     }
 
     fn unique_temp_dir() -> PathBuf {
