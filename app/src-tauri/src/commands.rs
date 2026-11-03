@@ -426,6 +426,16 @@ pub async fn import_file(app: AppHandle, path: PathBuf) -> CmdResult<View> {
 /// Merge another subscription's nodes into the active one (or stop).
 #[tauri::command]
 pub async fn set_merged(app: AppHandle, id: String, merged: bool) -> CmdResult<View> {
+    {
+        let state = app.state::<AppState>();
+        let engine = state.engine.lock().await;
+        let name = engine
+            .profiles()
+            .profile(&ProfileId(id.clone()))
+            .map(|p| p.name.clone())
+            .unwrap_or_default();
+        engine.note(&format!("{}合并订阅「{name}」", if merged { "" } else { "取消" }));
+    }
     change_profiles(&app, |profiles, _| {
         profiles.set_merged(&ProfileId(id), merged);
         Ok(())

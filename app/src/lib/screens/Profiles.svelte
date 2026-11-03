@@ -79,19 +79,24 @@
         </button>
         <div class="actions">
           {#if showMerge && !profile.active}
-            <button
-              class="merge"
-              class:on={profile.merged}
-              disabled={!!busy}
-              onclick={() =>
-                act(
-                  profile.id,
-                  () => api.setMerged(profile.id, !profile.merged),
-                  profile.merged ? "已取消合并" : "已合并到主订阅",
-                )}
-            >
-              {profile.merged ? "已合并" : "合并"}
-            </button>
+            <!-- A checkbox, not a pill: its state must read as a choice, so
+                 nobody "taps the badge" and unmerges by accident. -->
+            <label class="merge" class:on={profile.merged} title="把这个订阅的节点加入主订阅">
+              <input
+                type="checkbox"
+                checked={profile.merged}
+                disabled={!!busy}
+                onchange={async (event) => {
+                  const input = event.currentTarget;
+                  const merged = input.checked;
+                  await act(profile.id, () => api.setMerged(profile.id, merged), merged ? "已合并到主订阅" : "已取消合并");
+                  // If it was rolled back, show the real state again.
+                  input.checked = !!app.view?.profiles.find((p) => p.id === profile.id)?.merged;
+                }}
+              />
+              <span class="box"><Icon name="check" size={12} stroke={3} /></span>
+              合并
+            </label>
           {/if}
           {#if profile.remote}
             <button
@@ -160,18 +165,46 @@
     vertical-align: 1px;
   }
   .merge {
-    padding: 4px 10px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--accent);
-    box-shadow: inset 0 0 0 1.5px var(--accent-soft);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    color: var(--text-2);
+    cursor: pointer;
     transition: background 0.15s;
   }
+  .merge:hover {
+    background: var(--surface-2);
+  }
+  .merge input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .merge .box {
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    display: grid;
+    place-items: center;
+    color: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--text-3);
+    transition: background 0.15s, box-shadow 0.15s, color 0.15s;
+  }
   .merge.on {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .merge.on .box {
     color: var(--on-accent);
     background: var(--accent);
     box-shadow: none;
+  }
+  .merge:focus-within .box {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .merge-card {
     padding: 12px 14px;

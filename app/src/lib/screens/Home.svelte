@@ -79,6 +79,8 @@
     await app.run(() => api.toggle());
   }
 
+  const mergedCount = $derived(view.profiles.filter((p) => p.merged).length);
+
   // Only after the connection has been up a minute: never greet the user
   // with a warning the moment they connect.
   const showLeaks = $derived(
@@ -176,7 +178,10 @@
         <span class="badge"><Icon name="layers" size={17} /></span>
         <span class="body">
           <span class="label">订阅</span>
-          <span class="value">{profile?.name ?? "未选择"}</span>
+          <span class="value">
+            {profile?.name ?? "未选择"}
+            {#if mergedCount}<span class="merged">+ {mergedCount} 个合并订阅</span>{/if}
+          </span>
           {#if usage}
             <span class="meter"><span style="width: {usage.ratio * 100}%"></span></span>
             <span class="meta num">
@@ -327,6 +332,12 @@
   }
   .notice-text {
     flex: 1;
+  }
+  .merged {
+    margin-left: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--accent);
   }
   .notice.issue .dot {
     background: var(--bad);

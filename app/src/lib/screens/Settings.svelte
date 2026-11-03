@@ -95,7 +95,11 @@
     </Group>
 
     <Group title="订阅">
-      <Row label="管理订阅" hint="{view.profiles.length} 个订阅" onclick={() => app.go("profiles")} />
+      <Row
+        label="管理订阅"
+        hint={`${view.profiles.length} 个订阅${view.profiles.some((p) => p.merged) ? `，已合并 ${view.profiles.filter((p) => p.merged).length} 个` : ""}`}
+        onclick={() => app.go("profiles")}
+      />
       <Row label="自动更新订阅" hint="按服务商建议的间隔，默认每 12 小时">
         {#snippet trailing()}
           <Switch
