@@ -41,8 +41,15 @@ pub struct NodesView {
     pub items: Vec<NodeItem>,
 }
 
-pub fn build(proxies: &BTreeMap<String, Value>) -> NodesView {
-    let Some(group) = main_group(proxies) else {
+/// `global`: in "全部代理" mode traffic follows the `GLOBAL` selector, so
+/// that is the group to show and pick from.
+pub fn build(proxies: &BTreeMap<String, Value>, global: bool) -> NodesView {
+    let group = if global && proxies.contains_key("GLOBAL") {
+        Some("GLOBAL".to_owned())
+    } else {
+        main_group(proxies)
+    };
+    let Some(group) = group else {
         return NodesView::default();
     };
     let entry = &proxies[&group];
@@ -146,7 +153,7 @@ mod tests {
         }))
         .unwrap();
 
-        let view = build(&proxies);
+        let view = build(&proxies, false);
         assert_eq!(view.group.as_deref(), Some("Proxy"));
         assert_eq!(view.selected.as_deref(), Some("Auto"));
         assert_eq!(view.resolved.as_deref(), Some("JP"));

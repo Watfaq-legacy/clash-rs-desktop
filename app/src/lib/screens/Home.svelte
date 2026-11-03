@@ -25,6 +25,8 @@
   // Fetch the current node when connected; refresh periodically since
   // automatic groups can switch on their own.
   $effect(() => {
+    // Global mode reads a different group, so refetch when the mode changes.
+    void view.routingMode;
     if (phase !== "connected") {
       nodes = null;
       return;
@@ -149,6 +151,18 @@
           <span class="chev"><Icon name="chevron" size={14} /></span>
         </button>
       {/if}
+      {#if view.routingMode === "direct"}
+      <!-- No traffic reaches a node in this mode; showing one would mislead. -->
+      <button class="card" onclick={() => app.go("settings")}>
+        <span class="badge"><Icon name="globe" size={17} /></span>
+        <span class="body">
+          <span class="label">分流模式</span>
+          <span class="value">全部直连</span>
+          <span class="meta">不经过代理节点，可在设置中更改</span>
+        </span>
+        <span class="chev"><Icon name="chevron" size={16} /></span>
+      </button>
+      {:else}
       <button
         class="card"
         onclick={() => app.go("nodes")}
@@ -173,6 +187,7 @@
         {/if}
         <span class="chev"><Icon name="chevron" size={16} /></span>
       </button>
+      {/if}
 
       <button class="card" onclick={() => app.go("profiles")}>
         <span class="badge"><Icon name="layers" size={17} /></span>

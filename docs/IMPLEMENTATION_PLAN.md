@@ -17,7 +17,7 @@ Goal: a desktop client a non-technical user can run with one switch, with advanc
 
 ## Verified on real machines
 
-- Windows: onboarding, first-run core download, system proxy connect/restore, crash recovery, TUN install via UAC, service update via UAC, TUN connect with immediate connectivity, internal domain over TUN (`*.nas.example.net` → 192.0.2.11), bypass list, site-rule hot reload, broken-config rollback, merging, node memory across modes, leak hint (real launchers detected with friendly names), diagnostics (proxy hijack + fix, IPv6 capture routes), installer install/uninstall.
+- Windows: onboarding, first-run core download, system proxy connect/restore, crash recovery, TUN install via UAC, service update via UAC, TUN connect with immediate connectivity, internal domain over TUN resolved to its LAN address, bypass list, site-rule hot reload, broken-config rollback, merging, node memory across modes, leak hint (real launchers detected with friendly names), diagnostics (proxy hijack + fix, IPv6 capture routes), installer install/uninstall.
 - Linux (WSL Debian): tests, build, system-proxy flow, TUN via systemd service, deb install/remove.
 
 ## Not yet verified

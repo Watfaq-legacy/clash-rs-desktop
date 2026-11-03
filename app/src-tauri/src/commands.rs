@@ -850,7 +850,7 @@ async fn controller(state: &AppState) -> CmdResult<clash_rs_desktop_core::ClashI
 pub async fn get_nodes(state: State<'_, AppState>) -> CmdResult<NodesView> {
     let client = controller(&state).await?;
     let proxies = client.get_proxies().await.map_err(user_error)?;
-    Ok(nodes::build(&proxies.proxies))
+    Ok(nodes::build(&proxies.proxies, state.view().routing_mode == RoutingMode::Global))
 }
 
 #[tauri::command]
@@ -869,7 +869,7 @@ pub async fn select_node(
     // Drop connections still pinned to the old node so the switch is felt now.
     let _ = client.close_all_connections().await;
     let proxies = client.get_proxies().await.map_err(user_error)?;
-    Ok(nodes::build(&proxies.proxies))
+    Ok(nodes::build(&proxies.proxies, state.view().routing_mode == RoutingMode::Global))
 }
 
 #[tauri::command]
@@ -880,7 +880,7 @@ pub async fn test_delays(state: State<'_, AppState>, group: String) -> CmdResult
         .test_group_delay(&group, "https://www.gstatic.com/generate_204", 5000)
         .await;
     let proxies = client.get_proxies().await.map_err(user_error)?;
-    Ok(nodes::build(&proxies.proxies))
+    Ok(nodes::build(&proxies.proxies, state.view().routing_mode == RoutingMode::Global))
 }
 
 #[tauri::command]

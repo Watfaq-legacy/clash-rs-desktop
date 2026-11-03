@@ -124,6 +124,6 @@ pnpm bundle:linux     # .deb 和 AppImage（需在 Linux 上运行）
 
 ## 许可证
 
-MIT。
+MIT，详见 [LICENSE](LICENSE)。
 
 国旗图标来自 [Twemoji](https://github.com/twitter/twemoji)，采用 CC-BY 4.0 许可。

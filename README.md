@@ -124,6 +124,6 @@ pnpm bundle:linux     # .deb and AppImage (run on Linux)
 
 ## License
 
-MIT.
+MIT — see [LICENSE](LICENSE).
 
 Country flag glyphs are from [Twemoji](https://github.com/twitter/twemoji), licensed under CC-BY 4.0.

@@ -51,7 +51,7 @@ impl LeakDetector {
 }
 
 /// What users recognise: the program's own description ("Example Game
-/// Agent"), else a cleaned file name ("app.EXE.1793….old" → "app").
+/// Launcher"), else a cleaned file name ("app.EXE.1700….old" → "app").
 fn display_name(path: &str) -> String {
     if let Some(description) = platform::file_description(path)
         && !description.trim().is_empty()
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn cleans_odd_executable_names() {
         assert_eq!(
-            clean_file_name(r"C:\x\app.EXE.1793497039260520000.old"),
+            clean_file_name(r"C:\x\app.EXE.1700000000000000000.old"),
             "app"
         );
         assert_eq!(clean_file_name(r"C:\Games\Steam.exe"), "Steam");
