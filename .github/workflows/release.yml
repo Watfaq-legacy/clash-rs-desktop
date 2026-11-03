@@ -109,6 +109,9 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
+          # Multi-path artifacts keep their bundle/<kind>/ folders; flatten.
+          find dist -mindepth 2 -type f -exec mv -t dist {} +
+          find dist -mindepth 1 -type d -delete
           ls -l dist
           (cd dist && sha256sum * > SHA256SUMS.txt)
           if gh release view "$TAG" >/dev/null 2>&1; then
