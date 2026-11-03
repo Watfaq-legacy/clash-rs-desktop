@@ -75,16 +75,75 @@ impl CoreLaunchRequest {
     }
 }
 
-/// Bounded tail of the core's stdout/stderr, shared with the reader threads.
+/// Bounded tail of the core's stdout/stderr, shared with the reader threads,
+/// optionally mirrored to a rotating file so problems can be looked at later.
 #[derive(Debug, Clone, Default)]
 pub struct CoreLog {
     lines: Arc<Mutex<VecDeque<String>>>,
+    file: Arc<Mutex<Option<LogFile>>>,
+}
+
+#[derive(Debug)]
+struct LogFile {
+    path: PathBuf,
+    file: std::fs::File,
+    size: u64,
+}
+
+impl LogFile {
+    /// Rotate at this size, keeping `core.log.1` and `core.log.2`.
+    const MAX_BYTES: u64 = 2 * 1024 * 1024;
+    const KEEP: usize = 2;
+
+    fn open(path: &Path) -> std::io::Result<Self> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok(Self {
+            path: path.to_owned(),
+            file,
+            size,
+        })
+    }
+
+    fn write_line(&mut self, line: &str) {
+        use std::io::Write as _;
+        if self.size >= Self::MAX_BYTES {
+            self.rotate();
+        }
+        if writeln!(self.file, "{line}").is_ok() {
+            self.size += line.len() as u64 + 1;
+        }
+    }
+
+    fn rotate(&mut self) {
+        let numbered = |n: usize| PathBuf::from(format!("{}.{n}", self.path.display()));
+        for n in (1..Self::KEEP).rev() {
+            let _ = std::fs::rename(numbered(n), numbered(n + 1));
+        }
+        let _ = std::fs::rename(&self.path, numbered(1));
+        if let Ok(fresh) = Self::open(&self.path) {
+            *self = fresh;
+        }
+    }
 }
 
 impl CoreLog {
     const CAPACITY: usize = 500;
 
+    /// A log that also appends every line to `path` (rotating).
+    pub fn with_file(path: &Path) -> Self {
+        let log = Self::default();
+        *log.file.lock().unwrap_or_else(|e| e.into_inner()) = LogFile::open(path).ok();
+        log
+    }
+
     pub(crate) fn push(&self, line: String) {
+        if let Some(file) = self.file.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            file.write_line(&line);
+        }
         let mut lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
         if lines.len() == Self::CAPACITY {
             lines.pop_front();
@@ -92,6 +151,19 @@ impl CoreLog {
         lines.push_back(line);
     }
 
+    /// Record an app-side event (connect, disconnect, errors) next to the
+    /// core's own output.
+    pub fn note(&self, message: &str) {
+        let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let stamp = now
+            .format(&time::macros::format_description!(
+                "[year repr:last_two]-[month]-[day] [hour]:[minute]:[second]"
+            ))
+            .unwrap_or_default();
+        self.push(format!("{stamp} [Choclite] {message}"));
+    }
+
+    /// Clear the in-memory tail (the file keeps everything).
     pub fn clear(&self) {
         self.lines.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
@@ -217,11 +289,16 @@ impl Default for ClashProcessManager {
 
 impl ClashProcessManager {
     pub fn new() -> Self {
+        Self::with_log(CoreLog::default())
+    }
+
+    /// Use a caller-owned log (e.g. one mirrored to a file).
+    pub fn with_log(log: CoreLog) -> Self {
         Self {
             state: CoreState::Stopped,
             child: None,
             job: None,
-            log: CoreLog::default(),
+            log,
         }
     }
 

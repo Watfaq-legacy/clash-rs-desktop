@@ -1,9 +1,13 @@
 pub mod binary_update;
 pub mod config_layers;
+pub mod diagnose;
 pub mod elevate;
 pub mod engine;
 pub mod generate;
 pub mod ipc;
+pub mod leak;
+pub mod links;
+pub mod network;
 pub mod paths;
 pub mod process;
 pub mod profile;

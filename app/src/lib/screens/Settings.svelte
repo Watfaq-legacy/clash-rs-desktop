@@ -19,14 +19,7 @@
       .catch(() => {});
   });
 
-  const CONNECT_MODES: { value: ConnectMode; label: string }[] = [
-    { value: "system-proxy", label: "系统代理" },
-    { value: "tun", label: "增强模式" },
-  ];
-  const CONNECT_HINTS: Record<ConnectMode, string> = {
-    "system-proxy": "浏览器和大多数软件可用，无需管理员权限。",
-    tun: "接管所有程序的流量，包括游戏和命令行工具。首次开启需要一次管理员授权。",
-  };
+  const TUN_HINT = "接管所有程序的流量，包括游戏和命令行工具。首次开启需要一次管理员授权。";
   const MODES: { value: RoutingMode; label: string }[] = [
     { value: "rule", label: "智能分流" },
     { value: "global", label: "全部代理" },
@@ -74,17 +67,6 @@
   <TitleBar title="设置" onBack={() => app.back()} />
 
   <div class="scroll">
-    <Group title="连接方式" footer={CONNECT_HINTS[view.connectMode]}>
-      <div class="pad">
-        <Segmented
-          options={CONNECT_MODES}
-          value={view.connectMode}
-          onchange={(mode) => app.run(() => api.setConnectMode(mode))}
-        />
-      </div>
-    </Group>
-    {#if reconnectNote}<p class="note">将在下次连接时生效</p>{/if}
-
     <Group title="分流模式" footer={MODE_HINTS[view.routingMode]}>
       <div class="pad">
         <Segmented
@@ -131,7 +113,26 @@
       </div>
     </Group>
 
+    <Group title="网络">
+      <Row
+        label="不走代理的地址"
+        hint={view.bypass.length ? `${view.bypass.length} 条，局域网和内网域名已自动处理` : "局域网和内网域名已自动处理"}
+        onclick={() => app.go("bypass")}
+      />
+      <Row label="网络诊断" hint="上不了网时，检查是网络、路由还是节点的问题" onclick={() => app.go("diagnose")} />
+    </Group>
+
     <Group title="高级" footer="这些选项面向熟悉 Clash 配置的用户。">
+      <Row label="增强模式" hint={TUN_HINT}>
+        {#snippet trailing()}
+          <Switch
+            label="增强模式"
+            checked={view.connectMode === "tun"}
+            onchange={(on) => app.run(() => api.setConnectMode(on ? "tun" : "system-proxy"))}
+          />
+        {/snippet}
+      </Row>
+      {#if reconnectNote}<p class="note">将在下次连接时生效</p>{/if}
       <Row
         label="网站规则"
         hint={view.customRules.length ? `${view.customRules.length} 条规则` : "指定网站走代理、直连或拦截"}
@@ -193,7 +194,8 @@
     padding: 10px;
   }
   .note {
-    margin: -10px 4px 14px;
+    margin: 0;
+    padding: 0 14px 10px;
     font-size: 12px;
     color: var(--accent);
   }

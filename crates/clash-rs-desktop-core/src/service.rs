@@ -32,8 +32,9 @@ pub const SERVICE_PIPE: &str = "/run/choclite/service.sock";
 pub const CORE_PIPE: &str = r"\\.\pipe\choclite-core";
 #[cfg(unix)]
 pub const CORE_PIPE: &str = "/run/choclite/core.sock";
-/// Bumped whenever the app needs a newer service; the app reinstalls it then.
-pub const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Bump the suffix whenever the service's behaviour changes; an app that
+/// finds an older service asks for one UAC/pkexec prompt to update it.
+pub const SERVICE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+svc2");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "kebab-case")]
@@ -48,6 +49,8 @@ pub enum Request {
     Logs { count: usize },
     /// Download the latest core release into the service's own directory.
     UpdateCore { channel: UpdateChannel },
+    /// Clear the OS resolver cache (a diagnostics fix; needs privileges).
+    FlushDns,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,9 +220,11 @@ pub struct Supervisor {
 
 impl Supervisor {
     pub fn new(paths: ServicePaths) -> Self {
+        // Users can read (not write) data_dir, so they can open these logs.
+        let log = crate::CoreLog::with_file(&paths.data_dir.join("logs").join("core.log"));
         Self {
             paths,
-            process: ClashProcessManager::new(),
+            process: ClashProcessManager::with_log(log),
             core_version: None,
             last_config: None,
         }
@@ -244,8 +249,16 @@ impl Supervisor {
             }
             Request::Start { config } => self.start(&config).await,
             Request::Reload { config } => self.reload(&config).await,
-            Request::Stop => self.process.stop().map(|_| ()),
+            Request::Stop => self.process.stop().map(|_| {
+                // Cached fake-IP answers (198.18.x.x) would break the first
+                // seconds after disconnecting.
+                flush_os_dns_cache();
+            }),
             Request::UpdateCore { channel } => self.update_core(channel).await,
+            Request::FlushDns => {
+                flush_os_dns_cache();
+                Ok(())
+            }
         };
         match result {
             Ok(()) => Response::Ok,
@@ -316,6 +329,9 @@ impl Supervisor {
         match ready {
             Ok(version) => {
                 open_core_endpoint();
+                // Lookups that failed while the tunnel came up are cached by
+                // the OS and would keep failing for a while; drop them.
+                flush_os_dns_cache();
                 self.core_version = Some(version);
                 self.last_config = Some(config.to_owned());
                 Ok(())
@@ -376,6 +392,26 @@ impl Supervisor {
         }
         Ok(())
     }
+}
+
+/// Clear the OS resolver cache (needs the service's privileges).
+fn flush_os_dns_cache() {
+    use std::process::{Command, Stdio};
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("ipconfig");
+        command.arg("/flushdns");
+        command
+    } else {
+        let mut command = Command::new("resolvectl");
+        command.arg("flush-caches");
+        command
+    };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let _ = command.stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// Linux: a core that was killed (crash, SIGKILL) leaves its policy-routing

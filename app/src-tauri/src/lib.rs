@@ -28,6 +28,7 @@ pub fn run() {
             Some(vec![AUTOSTART_FLAG]),
         ))
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
@@ -38,6 +39,8 @@ pub fn run() {
             tray::create(app.handle())?;
             commands::spawn_health_watch(app.handle().clone());
             commands::spawn_subscription_updater(app.handle().clone());
+            commands::spawn_leak_watch(app.handle().clone());
+            commands::spawn_health_check(app.handle().clone());
 
             // Installed builds get `choclite://` from the installer; register
             // at runtime too so portable copies work. `clash://` (what most
@@ -107,6 +110,13 @@ pub fn run() {
             commands::read_override,
             commands::write_override,
             commands::take_deep_link,
+            commands::import_file,
+            commands::set_merged,
+            commands::set_bypass,
+            commands::ignore_leak,
+            commands::open_logs_dir,
+            commands::run_diagnostics,
+            commands::apply_fix,
             quit_app,
         ])
         .build(tauri::generate_context!())

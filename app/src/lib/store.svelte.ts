@@ -8,8 +8,10 @@ export type Screen =
   | "profiles"
   | "add"
   | "rules"
+  | "bypass"
   | "advanced"
-  | "logs";
+  | "logs"
+  | "diagnose";
 
 /** Where each screen's back button leads. */
 export const PARENT: Record<Screen, Screen> = {
@@ -19,8 +21,10 @@ export const PARENT: Record<Screen, Screen> = {
   profiles: "home",
   add: "profiles",
   rules: "settings",
+  bypass: "settings",
   advanced: "settings",
   logs: "settings",
+  diagnose: "settings",
 };
 
 export type Theme = "system" | "light" | "dark";
@@ -70,14 +74,19 @@ class AppStore {
     applyTheme(theme);
   }
 
+  /** Screens reachable from more than one place return where they came from. */
+  #cameFrom = new Map<Screen, Screen>();
+
   go(screen: Screen) {
+    this.#cameFrom.set(screen, this.screen);
     this.forward = screen !== "home";
     this.screen = screen;
   }
 
-  back(to: Screen = PARENT[this.screen]) {
+  back(to?: Screen) {
+    const target = to ?? this.#cameFrom.get(this.screen) ?? PARENT[this.screen];
     this.forward = false;
-    this.screen = to;
+    this.screen = target;
   }
 
   showToast(text: string, tone: "error" | "info" = "info") {

@@ -39,6 +39,8 @@ pub struct ProfileView {
     pub active: bool,
     pub subscription: Option<SubscriptionInfo>,
     pub updated_at: Option<i64>,
+    /// Merged into the active profile ("合并多个订阅").
+    pub merged: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +64,12 @@ pub struct View {
     pub auto_connect: bool,
     pub auto_update_subscriptions: bool,
     pub custom_rules: Vec<CustomRule>,
+    /// "不走代理的地址" entered by the user.
+    pub bypass: Vec<String>,
+    /// Programs seen going around the system proxy (best effort).
+    pub leaks: Vec<String>,
+    /// Most serious problem the background check found, if any.
+    pub health_issue: Option<String>,
     pub core_version: Option<String>,
     pub app_version: &'static str,
 }
@@ -82,6 +90,9 @@ impl AppState {
             auto_connect: false,
             auto_update_subscriptions: true,
             custom_rules: Vec::new(),
+            bypass: Vec::new(),
+            leaks: Vec::new(),
+            health_issue: None,
             core_version: None,
             app_version: env!("CARGO_PKG_VERSION"),
         };
@@ -112,14 +123,22 @@ pub fn sync_from_engine(view: &mut View, engine: &Engine) {
     view.auto_connect = settings.auto_connect;
     view.auto_update_subscriptions = settings.auto_update_subscriptions;
     view.custom_rules = settings.custom_rules.clone();
+    view.bypass = settings.bypass.clone();
     view.connected_mode = engine.connected_mode();
     view.port = engine.mixed_port();
     view.core_version = engine.core_version();
-    view.profiles = engine
-        .profiles()
+    if !engine.is_connected() {
+        view.leaks.clear();
+        view.health_issue = None;
+    }
+    let store = engine.profiles();
+    view.profiles = store
         .profiles()
         .iter()
-        .map(profile_view)
+        .map(|profile| ProfileView {
+            merged: store.is_merged(&profile.id) && !profile.active,
+            ..profile_view(profile)
+        })
         .collect();
 }
 
@@ -134,6 +153,7 @@ fn profile_view(profile: &UserProfile) -> ProfileView {
         active: profile.active,
         subscription: profile.subscription.clone(),
         updated_at: profile.updated_at,
+        merged: false,
     }
 }
 

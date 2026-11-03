@@ -34,9 +34,13 @@
       <p class="empty">{app.view?.phase === "connected" ? "暂无日志" : "连接后这里会显示内核日志"}</p>
     {:else}
       {#each lines as line, i (i)}
-        <div class="line {level(line)}">{line}</div>
+        <div class="line {level(line)}" class:app={line.includes("[Choclite]")}>{line}</div>
       {/each}
     {/if}
+  </div>
+  <div class="bar">
+    <span>日志会保存到文件，最多保留约 6 MB</span>
+    <button onclick={() => app.run(() => api.openLogsDir())}>打开日志文件夹</button>
   </div>
 </div>
 
@@ -66,6 +70,26 @@
   }
   .line.warn {
     color: var(--ok);
+  }
+  .line.app {
+    color: var(--accent);
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: -4px 16px 14px;
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  .bar button {
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
   }
   .line.error {
     color: var(--bad);

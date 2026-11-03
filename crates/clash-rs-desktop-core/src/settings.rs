@@ -22,6 +22,12 @@ pub struct AppSettings {
     /// Re-download remote profiles on the provider's interval.
     #[serde(default = "default_true")]
     pub auto_update_subscriptions: bool,
+    /// "不走代理的地址": domains / IP ranges that always go direct.
+    #[serde(default)]
+    pub bypass: Vec<String>,
+    /// Programs the user chose not to be warned about bypassing the proxy.
+    #[serde(default)]
+    pub ignored_leak_apps: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -39,6 +45,8 @@ impl Default for AppSettings {
             auto_connect: false,
             custom_rules: Vec::new(),
             auto_update_subscriptions: true,
+            bypass: Vec::new(),
+            ignored_leak_apps: Vec::new(),
         }
     }
 }

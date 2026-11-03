@@ -6,6 +6,8 @@
   import Icon from "$lib/components/Icon.svelte";
   import Sheet from "$lib/components/Sheet.svelte";
   import Rules from "$lib/screens/Rules.svelte";
+  import Bypass from "$lib/screens/Bypass.svelte";
+  import Diagnose from "$lib/screens/Diagnose.svelte";
   import Advanced from "$lib/screens/Advanced.svelte";
   import Home from "$lib/screens/Home.svelte";
   import Logs from "$lib/screens/Logs.svelte";
@@ -73,6 +75,10 @@
           <Profiles />
         {:else if app.screen === "add"}
           <Onboarding onBack={() => app.back()} />
+        {:else if app.screen === "diagnose"}
+          <Diagnose />
+        {:else if app.screen === "bypass"}
+          <Bypass />
         {:else if app.screen === "rules"}
           <Rules />
         {:else if app.screen === "advanced"}

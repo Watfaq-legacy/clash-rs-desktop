@@ -21,6 +21,7 @@ export interface Profile {
   active: boolean;
   subscription: SubscriptionInfo | null;
   updatedAt: number | null;
+  merged: boolean;
 }
 
 export interface CustomRule {
@@ -43,6 +44,9 @@ export interface View {
   autoConnect: boolean;
   autoUpdateSubscriptions: boolean;
   customRules: CustomRule[];
+  bypass: string[];
+  leaks: string[];
+  healthIssue: string | null;
   coreVersion: string | null;
   appVersion: string;
 }
@@ -72,6 +76,17 @@ export interface CoreUpdateInfo {
   current: string | null;
   latest: string;
   available: boolean;
+}
+
+export type FindingLevel = "ok" | "info" | "warn" | "error";
+export type Fix = "reconnect" | "reapply-system-proxy" | "restore-system-proxy" | "flush-dns" | "enable-tun";
+
+export interface Finding {
+  id: string;
+  level: FindingLevel;
+  title: string;
+  detail: string;
+  fix: Fix | null;
 }
 
 export interface DeepLinkImport {
@@ -107,6 +122,13 @@ export const api = {
   readOverride: () => invoke<string>("read_override"),
   writeOverride: (text: string) => invoke<View>("write_override", { text }),
   takeDeepLink: () => invoke<DeepLinkImport | null>("take_deep_link"),
+  importFile: (path: string) => invoke<View>("import_file", { path }),
+  setMerged: (id: string, merged: boolean) => invoke<View>("set_merged", { id, merged }),
+  setBypass: (entries: string[]) => invoke<View>("set_bypass", { entries }),
+  ignoreLeak: (appName: string) => invoke<View>("ignore_leak", { appName }),
+  openLogsDir: () => invoke<void>("open_logs_dir"),
+  runDiagnostics: () => invoke<Finding[]>("run_diagnostics"),
+  applyFix: (fix: Fix) => invoke<View>("apply_fix", { fix }),
   quit: () => invoke<void>("quit_app"),
 };
 

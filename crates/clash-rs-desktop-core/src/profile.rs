@@ -4,6 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
 use crate::paths::AppPaths;
@@ -112,8 +113,7 @@ pub async fn fetch_subscription(url: &str) -> anyhow::Result<FetchedSubscription
     }
 
     let headers = response.headers().clone();
-    let body = response.text().await?;
-    validate_clash_yaml(&body)?;
+    let body = normalise_config(response.text().await?)?;
 
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
     let suggested_name = header("profile-title")
@@ -130,6 +130,18 @@ pub async fn fetch_subscription(url: &str) -> anyhow::Result<FetchedSubscription
             .and_then(|v| v.trim().parse::<u32>().ok())
             .filter(|h| *h > 0),
     })
+}
+
+/// Accept a Clash YAML config as-is, or turn share links / a base64 link
+/// list (what many providers serve without a Clash UA) into one.
+pub fn normalise_config(body: String) -> anyhow::Result<String> {
+    match validate_clash_yaml(&body) {
+        Ok(()) => Ok(body),
+        Err(error) => match crate::links::config_from_links(&body) {
+            Some(config) => Ok(serde_yaml::to_string(&config)?),
+            None => Err(error),
+        },
+    }
 }
 
 fn validate_clash_yaml(body: &str) -> anyhow::Result<()> {
@@ -198,6 +210,9 @@ fn percent_decode(raw: &str) -> String {
 pub struct ProfileManifest {
     pub active_profile_id: Option<ProfileId>,
     pub profiles: Vec<UserProfile>,
+    /// Extra profiles whose nodes are merged into the active one.
+    #[serde(default)]
+    pub merged_ids: Vec<ProfileId>,
 }
 
 #[derive(Debug, Clone)]
@@ -270,6 +285,63 @@ impl ProfileStore {
         };
 
         self.upsert(profile);
+        self.set_active(&id)?;
+        Ok(id)
+    }
+
+    /// Import a config file (Clash YAML, or a text file of share links).
+    pub fn import_file(&mut self, paths: &AppPaths, file: &Path) -> anyhow::Result<ProfileId> {
+        let text = fs::read_to_string(file).context("无法读取这个文件")?;
+        let body = normalise_config(text)
+            .map_err(|_| anyhow::anyhow!("这个文件不是 Clash 配置，也没有识别到节点链接"))?;
+        let name = file
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "本地配置".to_owned());
+        let source = ProfileSource::LocalFile {
+            path: file.to_path_buf(),
+        };
+        self.import_content(paths, &name, source, &body)
+    }
+
+    /// Import pasted share links (`ss://`, `vmess://`, ...) as a profile.
+    pub fn import_links(&mut self, paths: &AppPaths, text: &str) -> anyhow::Result<ProfileId> {
+        let config = crate::links::config_from_links(text)
+            .ok_or_else(|| anyhow::anyhow!("没有识别到支持的节点链接"))?;
+        let count = config["proxies"].as_sequence().map_or(0, Vec::len);
+        let name = if count == 1 {
+            config["proxies"][0]["name"].as_str().unwrap_or("我的节点").to_owned()
+        } else {
+            format!("我的节点（{count} 个）")
+        };
+        self.import_content(paths, &name, ProfileSource::InlineTemplate, &serde_yaml::to_string(&config)?)
+    }
+
+    fn import_content(
+        &mut self,
+        paths: &AppPaths,
+        name: &str,
+        source: ProfileSource,
+        body: &str,
+    ) -> anyhow::Result<ProfileId> {
+        let id = self.unique_profile_id(name);
+        let profile_dir = paths.profiles_dir.join(&id.0);
+        fs::create_dir_all(&profile_dir)?;
+        let source_path = profile_dir.join("source.yaml");
+        fs::write(&source_path, body)?;
+
+        self.upsert(UserProfile {
+            id: id.clone(),
+            name: name.to_owned(),
+            source,
+            source_path,
+            generated_path: profile_dir.join("generated.yaml"),
+            profile_override_path: Some(profile_dir.join("override.yaml")),
+            active: false,
+            subscription: None,
+            updated_at: Some(unix_now()),
+            update_interval_hours: None,
+        });
         self.set_active(&id)?;
         Ok(id)
     }
@@ -431,8 +503,48 @@ impl ProfileStore {
         if self.manifest.active_profile_id.as_ref() == Some(id) {
             self.manifest.active_profile_id = None;
         }
+        self.manifest.merged_ids.retain(|merged| merged != id);
 
         Some(removed)
+    }
+
+    /// Profiles merged into the active one (never includes the active one).
+    pub fn merged_profiles(&self) -> Vec<&UserProfile> {
+        let active = self.manifest.active_profile_id.as_ref();
+        self.manifest
+            .merged_ids
+            .iter()
+            .filter(|id| Some(*id) != active)
+            .filter_map(|id| self.profile(id))
+            .collect()
+    }
+
+    /// Which profile is active and which are merged — to roll a change back.
+    pub fn selection(&self) -> (Option<ProfileId>, Vec<ProfileId>) {
+        (
+            self.manifest.active_profile_id.clone(),
+            self.manifest.merged_ids.clone(),
+        )
+    }
+
+    pub fn restore_selection(&mut self, (active, merged): (Option<ProfileId>, Vec<ProfileId>)) {
+        if let Some(id) = &active
+            && self.profile(id).is_some()
+        {
+            let _ = self.set_active(id);
+        }
+        self.manifest.merged_ids = merged;
+    }
+
+    pub fn is_merged(&self, id: &ProfileId) -> bool {
+        self.manifest.merged_ids.contains(id)
+    }
+
+    pub fn set_merged(&mut self, id: &ProfileId, merged: bool) {
+        self.manifest.merged_ids.retain(|existing| existing != id);
+        if merged {
+            self.manifest.merged_ids.push(id.clone());
+        }
     }
 
     pub fn set_active(&mut self, id: &ProfileId) -> anyhow::Result<()> {

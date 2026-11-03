@@ -1,7 +1,9 @@
 <script lang="ts">
   import { readText } from "@tauri-apps/plugin-clipboard-manager";
+  import { open } from "@tauri-apps/plugin-dialog";
   import { api } from "$lib/api";
   import Icon from "$lib/components/Icon.svelte";
+  import Sheet from "$lib/components/Sheet.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import { app } from "$lib/store.svelte";
 
@@ -9,26 +11,46 @@
 
   let url = $state("");
   let busy = $state(false);
+  let help = $state(false);
 
-  const looksLikeUrl = $derived(/^https?:\/\/\S+$/i.test(url.trim()));
+  const NODE_LINK = /^(ss|trojan|vmess|vless|hysteria2|hy2):\/\//i;
+  const accepted = (text: string) => /^https?:\/\/\S+$/i.test(text) || NODE_LINK.test(text);
+  const valid = $derived(accepted(url.trim()));
+  const isNodeLink = $derived(NODE_LINK.test(url.trim()));
 
   async function paste() {
     const text = (await readText().catch(() => ""))?.trim() ?? "";
-    if (/^https?:\/\//i.test(text)) url = text;
-    else app.showToast("剪贴板里没有订阅链接");
+    if (accepted(text)) url = text;
+    else app.showToast("剪贴板里没有订阅链接或节点链接");
+  }
+
+  function done(message: string) {
+    url = "";
+    app.showToast(message);
+    onBack?.();
   }
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
-    if (!looksLikeUrl || busy) return;
+    if (!valid || busy) return;
     busy = true;
     const view = await app.run(() => api.addSubscription(url.trim()));
     busy = false;
-    if (view) {
-      url = "";
-      app.showToast("订阅已添加");
-      onBack?.();
-    }
+    if (view) done(isNodeLink ? "节点已添加" : "订阅已添加");
+  }
+
+  async function importFile() {
+    const path = await open({
+      multiple: false,
+      directory: false,
+      title: "选择配置文件",
+      filters: [{ name: "Clash 配置或节点列表", extensions: ["yaml", "yml", "txt", "conf"] }],
+    }).catch(() => null);
+    if (typeof path !== "string" || busy) return;
+    busy = true;
+    const view = await app.run(() => api.importFile(path));
+    busy = false;
+    if (view) done("配置已导入");
   }
 </script>
 
@@ -44,7 +66,7 @@
       </div>
     {:else}
       <div class="hello compact">
-        <p>粘贴服务商提供的订阅链接</p>
+        <p>粘贴服务商提供的订阅链接，或者节点链接</p>
       </div>
     {/if}
 
@@ -52,7 +74,7 @@
       <label class="field">
         <input
           bind:value={url}
-          placeholder="https://..."
+          placeholder="订阅链接 https://… 或节点链接 ss://…"
           spellcheck="false"
           autocomplete="off"
           disabled={busy}
@@ -61,12 +83,31 @@
           <Icon name="clipboard" size={16} />
         </button>
       </label>
-      <button class="primary" type="submit" disabled={!looksLikeUrl || busy}>
-        {#if busy}<span class="spinner"></span>正在下载订阅…{:else}添加订阅{/if}
+      <button class="primary" type="submit" disabled={!valid || busy}>
+        {#if busy}<span class="spinner"></span>正在添加…{:else}{isNodeLink ? "添加节点" : "添加订阅"}{/if}
       </button>
+      <div class="links">
+        <button type="button" onclick={importFile} disabled={busy}>导入配置文件</button>
+        <span>·</span>
+        <button type="button" onclick={() => (help = true)}>还没有订阅？</button>
+      </div>
     </form>
   </main>
 </div>
+
+{#if help}
+  <Sheet title="什么是订阅？" onclose={() => (help = false)}>
+    <p>
+      Choclite 本身不提供网络节点。你需要一个「订阅」，它是服务商提供的一个链接，里面包含可用的节点，服务商会持续更新它。
+    </p>
+    <p><b>从哪里获得：</b>购买服务后，在服务商的网站或用户中心里找到「订阅链接」或「复制 Clash 订阅」，粘贴到这里即可。很多网站也有「一键导入」按钮，可以直接打开 Choclite。</p>
+    <p><b>自己有服务器？</b>直接粘贴节点链接（ss://、trojan://、vmess://、vless://、hysteria2://），或者导入 Clash 配置文件。</p>
+    <p class="muted">请选择可信的服务商，并遵守当地法律法规。</p>
+    {#snippet actions()}
+      <button class="primary" onclick={() => (help = false)}>知道了</button>
+    {/snippet}
+  </Sheet>
+{/if}
 
 <style>
   .screen {
@@ -84,6 +125,26 @@
   }
   .hello {
     text-align: center;
+  }
+  .links {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-3);
+  }
+  .links button {
+    color: var(--accent);
+  }
+  .links button:hover {
+    text-decoration: underline;
+  }
+  .links button:disabled {
+    opacity: 0.5;
+  }
+  .muted {
+    color: var(--text-3);
+    font-size: 12px;
   }
   .hello.compact {
     text-align: left;

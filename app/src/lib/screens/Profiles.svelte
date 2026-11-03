@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, type Profile } from "$lib/api";
   import Icon from "$lib/components/Icon.svelte";
+  import Switch from "$lib/components/Switch.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import * as fmt from "$lib/format";
   import { app } from "$lib/store.svelte";
@@ -8,6 +9,18 @@
   const profiles = $derived(app.view?.profiles ?? []);
   let busy = $state<string | null>(null);
   let confirmDelete = $state<string | null>(null);
+  // Merge mode stays open while any subscription is merged.
+  let merging = $state(false);
+  const showMerge = $derived(merging || profiles.some((p) => p.merged));
+
+  async function setMerging(on: boolean) {
+    merging = on;
+    if (!on) {
+      for (const profile of profiles.filter((p) => p.merged)) {
+        await act(profile.id, () => api.setMerged(profile.id, false));
+      }
+    }
+  }
 
   async function act(id: string, action: () => Promise<unknown>, done?: string) {
     if (busy) return;
@@ -50,7 +63,10 @@
         >
           <span class="radio"><span></span></span>
           <span class="info">
-            <span class="name">{profile.name}</span>
+            <span class="name">
+              {profile.name}
+              {#if showMerge && profile.active}<span class="tag">主订阅</span>{/if}
+            </span>
             {#if u}
               <span class="meter"><span style="width: {u.ratio * 100}%"></span></span>
             {/if}
@@ -62,6 +78,21 @@
           </span>
         </button>
         <div class="actions">
+          {#if showMerge && !profile.active}
+            <button
+              class="merge"
+              class:on={profile.merged}
+              disabled={!!busy}
+              onclick={() =>
+                act(
+                  profile.id,
+                  () => api.setMerged(profile.id, !profile.merged),
+                  profile.merged ? "已取消合并" : "已合并到主订阅",
+                )}
+            >
+              {profile.merged ? "已合并" : "合并"}
+            </button>
+          {/if}
           {#if profile.remote}
             <button
               class="icon"
@@ -88,6 +119,18 @@
     <button class="add" onclick={() => app.go("add")}>
       <Icon name="plus" size={16} /> 添加订阅
     </button>
+
+    {#if profiles.length > 1}
+      <div class="merge-card">
+        <div class="merge-row">
+          <span>
+            <b>合并多个订阅</b>
+            <small>把其他订阅的节点加入当前订阅，"自动选择"会在所有节点里挑最快的。分流规则沿用主订阅。</small>
+          </span>
+          <Switch label="合并多个订阅" checked={showMerge} onchange={setMerging} />
+        </div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -105,6 +148,52 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  .tag {
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-soft);
+    vertical-align: 1px;
+  }
+  .merge {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1.5px var(--accent-soft);
+    transition: background 0.15s;
+  }
+  .merge.on {
+    color: var(--on-accent);
+    background: var(--accent);
+    box-shadow: none;
+  }
+  .merge-card {
+    padding: 12px 14px;
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+  .merge-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .merge-row span {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .merge-row small {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-3);
   }
   article {
     display: flex;

@@ -5,8 +5,8 @@
 use std::{path::PathBuf, time::Duration};
 
 use clash_rs_desktop_core::{
-    ConnectMode, ControllerConfigPatch, CustomRule, NeedsServiceInstall, ProfileId, ProfileSource,
-    RoutingMode, RuleAction, RuleKind, engine::CoreUpdateInfo, fetch_subscription,
+    AppPaths, ConnectMode, ControllerConfigPatch, CustomRule, NeedsServiceInstall, ProfileId,
+    ProfileSource, ProfileStore, RoutingMode, RuleAction, RuleKind, engine::CoreUpdateInfo, fetch_subscription,
 };
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -124,6 +124,64 @@ async fn apply_config_change(app: &AppHandle) -> CmdResult<View> {
             Err(user_error(error))
         }
         Err(_) => reconnect(app).await,
+    }
+}
+
+/// Change which profile(s) are in use (switch, import, merge). If the core
+/// can't run the result, put the previous selection back so a bad config
+/// never costs the user a working connection.
+async fn change_profiles(
+    app: &AppHandle,
+    change: impl FnOnce(&mut ProfileStore, &AppPaths) -> anyhow::Result<()>,
+) -> CmdResult<View> {
+    let state = app.state::<AppState>();
+    let was_connected = state.view().phase == Phase::Connected;
+    let (previous, existing) = {
+        let mut engine = state.engine.lock().await;
+        let paths = engine.paths().clone();
+        let profiles = engine.profiles_mut();
+        let previous = profiles.selection();
+        let existing: Vec<ProfileId> = profiles.profiles().iter().map(|p| p.id.clone()).collect();
+        change(profiles, &paths).map_err(user_error)?;
+        profiles.save().map_err(user_error)?;
+        (previous, existing)
+    };
+
+    match apply_config_change(app).await {
+        Ok(view) => Ok(view),
+        Err(message) => {
+            {
+                let mut engine = state.engine.lock().await;
+                engine.note(&format!("新配置无法使用，已切回原来的配置：{message}"));
+                let profiles_dir = engine.paths().profiles_dir.clone();
+                let profiles = engine.profiles_mut();
+                profiles.restore_selection(previous);
+                // A just-imported profile that can't run is dropped, not kept
+                // as a broken entry.
+                let added: Vec<ProfileId> = profiles
+                    .profiles()
+                    .iter()
+                    .map(|p| p.id.clone())
+                    .filter(|id| !existing.contains(id))
+                    .collect();
+                for id in added {
+                    profiles.remove(&id);
+                    let _ = std::fs::remove_dir_all(profiles_dir.join(&id.0));
+                }
+                let _ = profiles.save();
+            }
+            if was_connected {
+                if state.view().phase == Phase::Connected {
+                    let _ = apply_config_change(app).await;
+                } else {
+                    let _ = connect_flow(app).await;
+                }
+            } else {
+                let engine = state.engine.lock().await;
+                publish(app, |view| sync_from_engine(view, &engine));
+            }
+            Err(format!("这个配置无法使用，已切回原来的配置。原因：{message}"))
+        }
     }
 }
 
@@ -337,23 +395,193 @@ pub async fn add_subscription(
     url: String,
     name: Option<String>,
 ) -> CmdResult<View> {
+    // Pasted share links (self-hosted nodes) rather than a subscription URL.
+    if clash_rs_desktop_core::links::looks_like_links(&url) {
+        return change_profiles(&app, |profiles, paths| {
+            profiles.import_links(paths, &url).map(|_| ())
+        })
+        .await;
+    }
+
     // Download outside the engine lock so the UI stays responsive.
     let mut fetched = fetch_subscription(&url).await.map_err(user_error)?;
     // A name given by the provider's import link beats header guesses.
     if let Some(name) = name.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()) {
         fetched.suggested_name = Some(name);
     }
+    change_profiles(&app, |profiles, paths| {
+        let id = profiles.import_remote(paths, fetched)?;
+        // A newly added subscription is what the user wants to use now.
+        profiles.set_active(&id)
+    })
+    .await
+}
+
+/// Import a local Clash config (or a text file of share links).
+#[tauri::command]
+pub async fn import_file(app: AppHandle, path: PathBuf) -> CmdResult<View> {
+    change_profiles(&app, |profiles, paths| profiles.import_file(paths, &path).map(|_| ())).await
+}
+
+/// Merge another subscription's nodes into the active one (or stop).
+#[tauri::command]
+pub async fn set_merged(app: AppHandle, id: String, merged: bool) -> CmdResult<View> {
+    change_profiles(&app, |profiles, _| {
+        profiles.set_merged(&ProfileId(id), merged);
+        Ok(())
+    })
+    .await
+}
+
+/// Replace the "不走代理的地址" list. Invalid entries are rejected with a
+/// message naming them, so the user can fix the typo.
+#[tauri::command]
+pub async fn set_bypass(app: AppHandle, entries: Vec<String>) -> CmdResult<View> {
+    let mut cleaned: Vec<String> = Vec::new();
+    for entry in entries.iter().map(|e| e.trim()).filter(|e| !e.is_empty()) {
+        use clash_rs_desktop_core::generate::{BypassEntry, parse_bypass_entry};
+        let normalised = match parse_bypass_entry(entry) {
+            Some(BypassEntry::Domain(domain)) => domain,
+            Some(BypassEntry::Cidr(cidr)) => cidr,
+            None => return Err(format!("「{entry}」不是有效的域名或 IP 段")),
+        };
+        if !cleaned.contains(&normalised) {
+            cleaned.push(normalised);
+        }
+    }
     {
         let state = app.state::<AppState>();
         let mut engine = state.engine.lock().await;
-        let paths = engine.paths().clone();
-        let profiles = engine.profiles_mut();
-        let id = profiles.import_remote(&paths, fetched).map_err(user_error)?;
-        // A newly added subscription is what the user wants to use now.
-        profiles.set_active(&id).map_err(user_error)?;
-        profiles.save().map_err(user_error)?;
+        let store = engine.settings_mut();
+        store.settings_mut().bypass = cleaned;
+        store.save().map_err(user_error)?;
+    }
+    // System-proxy exceptions are set at connect time, so reconnect there;
+    // TUN picks the list up through a hot reload.
+    let state = app.state::<AppState>();
+    if state.view().phase == Phase::Connected && state.view().connected_mode == Some(ConnectMode::SystemProxy) {
+        return reconnect(&app).await;
     }
     apply_config_change(&app).await
+}
+
+/// Stop warning about a program going around the proxy.
+#[tauri::command]
+pub async fn ignore_leak(app: AppHandle, app_name: String) -> CmdResult<View> {
+    let state = app.state::<AppState>();
+    let mut engine = state.engine.lock().await;
+    let store = engine.settings_mut();
+    let ignored = &mut store.settings_mut().ignored_leak_apps;
+    if !ignored.iter().any(|i| i.eq_ignore_ascii_case(&app_name)) {
+        ignored.push(app_name.clone());
+    }
+    store.save().map_err(user_error)?;
+    Ok(publish(&app, |view| view.leaks.retain(|leak| !leak.eq_ignore_ascii_case(&app_name))))
+}
+
+#[tauri::command]
+pub async fn open_logs_dir(app: AppHandle) -> CmdResult<()> {
+    use tauri_plugin_opener::OpenerExt as _;
+    let dir = app.state::<AppState>().engine.lock().await.logs_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    app.opener()
+        .open_path(dir.display().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn run_diagnostics(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<clash_rs_desktop_core::diagnose::Finding>> {
+    Ok(state.engine.lock().await.diagnose(true).await)
+}
+
+/// Apply a one-click remedy from the diagnostics screen.
+#[tauri::command]
+pub async fn apply_fix(app: AppHandle, fix: clash_rs_desktop_core::diagnose::Fix) -> CmdResult<View> {
+    use clash_rs_desktop_core::diagnose::Fix;
+    let state = app.state::<AppState>();
+    let connected = state.view().phase == Phase::Connected;
+    match fix {
+        Fix::Reconnect if connected => reconnect(&app).await?,
+        Fix::EnableTun => {
+            {
+                let mut engine = state.engine.lock().await;
+                let store = engine.settings_mut();
+                store.settings_mut().connect_mode = ConnectMode::Tun;
+                store.save().map_err(user_error)?;
+            }
+            if connected { reconnect(&app).await? } else { connect_flow(&app).await? }
+        }
+        other => {
+            let mut engine = state.engine.lock().await;
+            engine.apply_fix(other).await.map_err(user_error)?;
+            publish(&app, |view| sync_from_engine(view, &engine))
+        }
+    };
+    // The watchdog re-raises it on its next round if it isn't really fixed.
+    Ok(publish(&app, |view| view.health_issue = None))
+}
+
+/// Background: cheap periodic health check while connected (system proxy
+/// every 30s; TUN every 2 min since it inspects routes). Surfaces only
+/// real errors, as a quiet line on the home screen.
+pub fn spawn_health_check(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(45)).await;
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        let mut round: u32 = 0;
+        loop {
+            tick.tick().await;
+            round += 1;
+            let state = app.state::<AppState>();
+            let view = state.view();
+            if view.phase != Phase::Connected {
+                continue;
+            }
+            if view.connected_mode == Some(ConnectMode::Tun) && round % 4 != 0 {
+                continue;
+            }
+            let Ok(engine) = state.engine.try_lock() else { continue };
+            let findings = engine.diagnose(false).await;
+            drop(engine);
+            use clash_rs_desktop_core::diagnose::Level;
+            let issue = findings
+                .iter()
+                .find(|f| f.level == Level::Error)
+                .map(|f| f.title.clone());
+            if issue != state.view().health_issue {
+                publish(&app, |view| view.health_issue = issue);
+            }
+        }
+    });
+}
+
+/// Background: every 30s in system-proxy mode, look for programs that go
+/// around the proxy and surface them as a gentle hint.
+pub fn spawn_leak_watch(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            let state = app.state::<AppState>();
+            let view = state.view();
+            if view.phase != Phase::Connected || view.connected_mode != Some(ConnectMode::SystemProxy) {
+                continue;
+            }
+            let Ok(engine) = state.engine.try_lock() else { continue };
+            let found = tokio::task::block_in_place(|| engine.leaking_apps());
+            drop(engine);
+            // Sticky for the session: a launcher's short burst still counts.
+            let new: Vec<String> = found
+                .into_iter()
+                .filter(|app| !view.leaks.iter().any(|l| l.eq_ignore_ascii_case(app)))
+                .collect();
+            if !new.is_empty() {
+                publish(&app, |view| view.leaks.extend(new));
+            }
+        }
+    });
 }
 
 async fn refresh_profile(app: &AppHandle, id: ProfileId) -> CmdResult<View> {
@@ -392,14 +620,7 @@ pub async fn refresh_subscription(app: AppHandle, id: String) -> CmdResult<View>
 
 #[tauri::command]
 pub async fn select_profile(app: AppHandle, id: String) -> CmdResult<View> {
-    {
-        let state = app.state::<AppState>();
-        let mut engine = state.engine.lock().await;
-        let profiles = engine.profiles_mut();
-        profiles.set_active(&ProfileId(id)).map_err(user_error)?;
-        profiles.save().map_err(user_error)?;
-    }
-    apply_config_change(&app).await
+    change_profiles(&app, |profiles, _| profiles.set_active(&ProfileId(id))).await
 }
 
 #[tauri::command]

@@ -22,7 +22,10 @@ use crate::{
     CoreLaunchRequest, CoreState, CoreUpdateManager, ManagedCoreFiles, ProfileStore,
     SettingsStore, SystemProxyBackend, SystemProxySnapshot,
     elevate::{Elevated, run_elevated},
-    generate::{ConfigInputs, generate},
+    CoreLog,
+    generate::{Bypass, ConfigInputs, generate},
+    leak::LeakDetector,
+    network::LocalNetwork,
     service::{Request, Response, SERVICE_VERSION, ServiceClient},
     settings::ConnectMode,
     system_proxy::PlatformSystemProxy,
@@ -74,6 +77,14 @@ pub struct Engine {
     controller: Option<ClashIpcClient>,
     mixed_port: Option<u16>,
     service: ServiceClient,
+    /// Core output + app events, mirrored to `logs/core.log`.
+    log: CoreLog,
+    /// The machine's own DNS setup, captured before we change anything.
+    local: LocalNetwork,
+    /// Watches for apps bypassing the system proxy (system-proxy mode).
+    leaks: Option<LeakDetector>,
+    /// The config the core is running, for diagnostics.
+    running_config: Option<Value>,
 }
 
 impl Engine {
@@ -95,6 +106,10 @@ impl Engine {
             controller: None,
             mixed_port: None,
             service: ServiceClient::default(),
+            log: CoreLog::with_file(&paths.logs_dir().join("core.log")),
+            local: LocalNetwork::detect(),
+            leaks: None,
+            running_config: None,
             paths,
         };
 
@@ -149,13 +164,46 @@ impl Engine {
 
     pub async fn core_log_tail(&self, count: usize) -> Vec<String> {
         match &self.backend {
-            Some(Backend::Local(process, _)) => process.log().tail(count),
             Some(Backend::Service) => match self.service.send(&Request::Logs { count }).await {
                 Ok(Response::Logs { lines }) => lines,
-                _ => Vec::new(),
+                _ => self.log.tail(count),
             },
-            None => Vec::new(),
+            // Local core and app events share `self.log`; it also keeps the
+            // last session's lines after disconnecting.
+            _ => self.log.tail(count),
         }
+    }
+
+    /// Folder with the log files for the current/last connection mode.
+    pub fn logs_dir(&self) -> PathBuf {
+        if matches!(self.backend, Some(Backend::Service))
+            || (self.backend.is_none() && self.settings.settings().connect_mode == ConnectMode::Tun)
+        {
+            let service = crate::service::ServicePaths::system().data_dir.join("logs");
+            if service.exists() {
+                return service;
+            }
+        }
+        self.paths.logs_dir()
+    }
+
+    /// Record an app-side event in the log (and its file).
+    pub fn note(&self, message: &str) {
+        self.log.note(message);
+    }
+
+    /// Programs seen going around the system proxy since connecting, minus
+    /// ones the user chose to ignore. Empty outside system-proxy mode.
+    pub fn leaking_apps(&self) -> Vec<String> {
+        let Some(detector) = &self.leaks else {
+            return Vec::new();
+        };
+        let ignored = &self.settings.settings().ignored_leak_apps;
+        detector
+            .scan()
+            .into_iter()
+            .filter(|app| !ignored.iter().any(|i| i.eq_ignore_ascii_case(app)))
+            .collect()
     }
 
     // ---- core binary --------------------------------------------------------
@@ -255,11 +303,23 @@ impl Engine {
             }
         }
 
+        // Other subscriptions merged in: their nodes join this one's groups.
+        let mut extra_subscriptions = Vec::new();
+        for merged in self.profiles.merged_profiles() {
+            match read_yaml(&merged.source_path) {
+                Ok(Some(config)) => extra_subscriptions.push((merged.name.clone(), config)),
+                _ => self.log.note(&format!("合并订阅「{}」时读取失败，已跳过", merged.name)),
+            }
+        }
+
         let settings = self.settings.settings();
         Ok(generate(ConfigInputs {
             subscription,
+            extra_subscriptions,
             overrides,
             custom_rules: &settings.custom_rules,
+            bypass: &settings.bypass,
+            local: &self.local,
             mixed_port: port,
             mode: settings.routing_mode.as_clash(),
             tun,
@@ -303,30 +363,57 @@ impl Engine {
         let core = self.ensure_core(on_step).await?;
         on_step("正在连接…");
         let port = pick_port(self.settings.settings().system_proxy.target.port);
+        // Capture the machine's DNS setup while it is still untouched.
+        self.local = LocalNetwork::detect();
 
-        match self.settings.settings().connect_mode {
+        let mode = self.settings.settings().connect_mode;
+        let result = self.connect_with(mode, &core, port).await;
+        match &result {
+            Ok(()) => {
+                self.mixed_port = Some(port);
+                self.note(match mode {
+                    ConnectMode::SystemProxy => "已连接（系统代理）",
+                    ConnectMode::Tun => "已连接（增强模式）",
+                });
+            }
+            Err(error) => self.note(&format!("连接失败：{error}")),
+        }
+        result
+    }
+
+    async fn connect_with(&mut self, mode: ConnectMode, core: &ActiveCore, port: u16) -> anyhow::Result<()> {
+        match mode {
             ConnectMode::SystemProxy => {
-                self.start_local(&core, port, false).await?;
+                self.start_local(core, port, false).await?;
                 if let Err(error) = self.apply_system_proxy(port) {
                     let _ = self.disconnect().await;
                     return Err(error.context("无法设置系统代理"));
                 }
+                let core_pid = match &mut self.backend {
+                    Some(Backend::Local(process, _)) => match process.state() {
+                        CoreState::Running { pid } => Some(pid),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let ignore = std::iter::once(std::process::id()).chain(core_pid).collect();
+                self.leaks = Some(LeakDetector::start(ignore));
+                Ok(())
             }
             // The privileged service owns TUN on every platform: on Linux,
             // capabilities on the core alone aren't enough (clash-rs runs
             // `ip` to set up routes, and caps don't pass to that child).
-            ConnectMode::Tun => self.start_service(port).await?,
+            ConnectMode::Tun => self.start_service(port).await,
         }
-        self.mixed_port = Some(port);
-        Ok(())
     }
 
     async fn start_local(&mut self, core: &ActiveCore, port: u16, tun: bool) -> anyhow::Result<()> {
         let ipc = local_controller_path(&self.paths);
         let config = self.build_config(port, tun, Some(&ipc))?;
+        self.running_config = Some(config.clone());
         let config_path = self.write_local_config(core, &config)?;
 
-        let mut process = ClashProcessManager::new();
+        let mut process = ClashProcessManager::with_log(self.log.clone());
         process.start_direct(&self.local_launch(core, &config_path))?;
         let client = controller_client(&ipc);
         if let Err(error) = wait_ready(&client, Duration::from_secs(15)).await {
@@ -362,24 +449,32 @@ impl Engine {
             }
             Some(_) => {}
         }
-        let config = serde_yaml::to_string(&self.build_config(port, true, None)?)?;
+        let value = self.build_config(port, true, None)?;
+        let config = serde_yaml::to_string(&value)?;
+        self.running_config = Some(value);
         match self.service.send(&Request::Start { config }).await? {
             Response::Ok => {}
             Response::Error { message } => anyhow::bail!("增强模式启动失败：{message}"),
             other => anyhow::bail!("unexpected service response: {other:?}"),
         }
         self.backend = Some(Backend::Service);
-        self.controller = Some(controller_client(crate::service::CORE_PIPE));
+        let client = controller_client(crate::service::CORE_PIPE);
+        // With TUN, every lookup goes through the core; its encrypted DNS
+        // needs a moment to come up. Don't report "connected" before a
+        // page could actually load.
+        wait_dns(&client, Duration::from_secs(8)).await;
+        self.controller = Some(client);
         Ok(())
     }
 
     /// The service may still be running a TUN core from before the app
-    /// restarted; pick it up instead of starting a second one.
+    /// restarted (or was updated); pick it up instead of starting a second
+    /// one. Deliberately not version-gated: status/stop work on any service
+    /// version, and ignoring a running tunnel would leave the user's traffic
+    /// captured with the UI saying "disconnected". Only *starting* requires
+    /// the current service version.
     pub async fn adopt_running_service(&mut self) -> bool {
         if self.is_connected() {
-            return false;
-        }
-        if self.service_version().await.as_deref() != Some(SERVICE_VERSION) {
             return false;
         }
         match self.service.send(&Request::Status).await {
@@ -398,6 +493,10 @@ impl Engine {
         let restored = self.restore_system_proxy();
         self.controller = None;
         self.mixed_port = None;
+        self.leaks = None;
+        if self.backend.is_some() {
+            self.note("已断开");
+        }
         match self.backend.take() {
             Some(Backend::Local(mut process, _)) => {
                 process.stop()?;
@@ -423,6 +522,7 @@ impl Engine {
                 let core = self.installed_core().context("内核文件丢失")?;
                 let tun = self.connected_mode() == Some(ConnectMode::Tun);
                 let config = self.build_config(port, tun, Some(&local_controller_path(&self.paths)))?;
+                self.running_config = Some(config.clone());
                 self.write_local_config(&core, &config)?;
                 // `{}` = reload the startup config file we just replaced. A
                 // timeout surfaces as an error; the shell then reconnects.
@@ -438,7 +538,9 @@ impl Engine {
                 .context("内核重新加载配置超时")??;
             }
             Some(Backend::Service) => {
-                let config = serde_yaml::to_string(&self.build_config(port, true, None)?)?;
+                let value = self.build_config(port, true, None)?;
+                let config = serde_yaml::to_string(&value)?;
+                self.running_config = Some(value);
                 if let Response::Error { message } = self.service.send(&Request::Reload { config }).await? {
                     anyhow::bail!("配置有误：{message}");
                 }
@@ -512,6 +614,125 @@ impl Engine {
         anyhow::bail!("增强模式服务没有启动")
     }
 
+    // ---- diagnostics -----------------------------------------------------------
+
+    /// Run the checks. Read-only. 	horough adds delay tests and route
+    /// lookups (a few seconds, some traffic); the background watchdog uses
+    /// the quick variant.
+    pub async fn diagnose(&self, thorough: bool) -> Vec<crate::diagnose::Finding> {
+        use crate::diagnose::{Context, assess, collect};
+
+        let mut ctx = Context {
+            connected_tun: self.connected_mode().map(|mode| mode == ConnectMode::Tun),
+            mixed_port: self.mixed_port,
+            direct_mode: self.settings.settings().routing_mode == crate::RoutingMode::Direct,
+            ..Default::default()
+        };
+        if let Some(config) = &self.running_config {
+            ctx.proxy_servers = config
+                .get("proxies")
+                .and_then(Value::as_sequence)
+                .into_iter()
+                .flatten()
+                .filter_map(|p| p.get("server").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect();
+        }
+
+        if let Some(client) = self.controller.as_ref().filter(|_| thorough) {
+            const PROBE: &str = "http://www.gstatic.com/generate_204";
+            let delay = |reply: anyhow::Result<serde_json::Value>| {
+                reply.ok().and_then(|v| v.get("delay").and_then(|d| d.as_u64())).filter(|d| *d > 0)
+            };
+            let main = self
+                .running_config
+                .as_ref()
+                .and_then(crate::generate::main_select_group);
+            let (direct, proxied) = tokio::join!(
+                client.test_proxy_delay("DIRECT", PROBE, 5000),
+                async {
+                    match &main {
+                        Some(group) => Some(client.test_proxy_delay(group, PROBE, 5000).await),
+                        None => None,
+                    }
+                }
+            );
+            ctx.direct_delay = Some(delay(direct));
+            ctx.proxy_delay = proxied.map(delay);
+
+            // A loop shows up as connections that came in through TUN but
+            // are headed for a proxy server: the core's own outbound
+            // traffic being routed back into itself.
+            if ctx.connected_tun == Some(true)
+                && let Ok(connections) = client.get_connections().await
+            {
+                ctx.looping_connections = connections
+                    .connections
+                    .iter()
+                    .filter(|conn| {
+                        let meta = &conn["metadata"];
+                        let inbound = meta["type"].as_str().unwrap_or_default().to_ascii_lowercase();
+                        let host = meta["host"].as_str().unwrap_or_default();
+                        let ip = meta["destinationIP"].as_str().unwrap_or_default();
+                        inbound.contains("tun")
+                            && ctx
+                                .proxy_servers
+                                .iter()
+                                .any(|server| server == host || server == ip)
+                    })
+                    .count();
+            }
+        }
+
+        let port = self.mixed_port;
+        // Route/adapter lookups only when thorough, or under TUN where routes
+        // are the main thing that can break.
+        let routes = thorough || ctx.connected_tun == Some(true);
+        let sys = tokio::task::spawn_blocking(move || collect(port, routes))
+            .await
+            .unwrap_or_default();
+        let findings = assess(&ctx, &sys);
+        if thorough && let Some(worst) = findings.first() {
+            self.note(&format!("网络诊断：{}", worst.title));
+        }
+        findings
+    }
+
+    /// Apply a diagnostics remedy that doesn't need a reconnect (the shell
+    /// handles `Reconnect` and `EnableTun` itself).
+    pub async fn apply_fix(&mut self, fix: crate::diagnose::Fix) -> anyhow::Result<()> {
+        use crate::diagnose::Fix;
+        match fix {
+            Fix::ReapplySystemProxy => {
+                let port = self.mixed_port.context("尚未连接")?;
+                self.apply_system_proxy(port)
+            }
+            Fix::RestoreSystemProxy => {
+                if self.paths.system_proxy_snapshot_path().exists() {
+                    return self.restore_system_proxy();
+                }
+                // No snapshot of ours: just switch off the dead local proxy,
+                // keeping its address so the user's own setup isn't lost.
+                let backend = PlatformSystemProxy;
+                let mut snapshot = backend.snapshot()?;
+                snapshot.enabled = false;
+                backend.restore(&snapshot)
+            }
+            Fix::FlushDns => match self.service.send(&Request::FlushDns).await {
+                Ok(Response::Ok) => Ok(()),
+                _ => anyhow::bail!("清理 DNS 缓存需要增强模式组件"),
+            },
+            Fix::Reconnect if !self.is_connected() => {
+                // Leftover tunnel while "disconnected": stop it.
+                if let Response::Error { message } = self.service.send(&Request::Stop).await? {
+                    anyhow::bail!(message);
+                }
+                Ok(())
+            }
+            Fix::Reconnect | Fix::EnableTun => Ok(()),
+        }
+    }
+
     // ---- system proxy ----------------------------------------------------------
 
     fn apply_system_proxy(&self, port: u16) -> anyhow::Result<()> {
@@ -525,6 +746,13 @@ impl Engine {
         }
 
         let mut target = self.settings.settings().system_proxy.target.clone();
+        // Local names and the user's "不走代理" list skip the proxy entirely.
+        let bypass = Bypass::new(&self.settings.settings().bypass, &self.local);
+        for entry in bypass.wininet_entries() {
+            if !target.bypass.contains(&entry) {
+                target.bypass.insert(target.bypass.len().saturating_sub(1), entry);
+            }
+        }
         target.port = port;
         backend.apply(&target)
     }
@@ -589,6 +817,22 @@ async fn wait_ready(client: &ClashIpcClient, timeout: Duration) -> anyhow::Resul
             Err(error) if started.elapsed() > timeout => return Err(error),
             Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
         }
+    }
+}
+
+/// Best effort: return once the core resolves a well-known name (or after
+/// `timeout`; a slow network shouldn't block connecting forever).
+async fn wait_dns(client: &ClashIpcClient, timeout: Duration) {
+    let started = std::time::Instant::now();
+    while started.elapsed() < timeout {
+        let answered = client
+            .query_dns("www.gstatic.com", "A")
+            .await
+            .is_ok_and(|reply| reply.get("Answer").and_then(|a| a.as_array()).is_some_and(|a| !a.is_empty()));
+        if answered {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
 

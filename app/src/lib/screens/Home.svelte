@@ -1,7 +1,9 @@
 <script lang="ts">
   import { api, type Nodes } from "$lib/api";
   import Icon from "$lib/components/Icon.svelte";
+  import { fly } from "svelte/transition";
   import PowerButton from "$lib/components/PowerButton.svelte";
+  import Sheet from "$lib/components/Sheet.svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import * as fmt from "$lib/format";
   import { app } from "$lib/store.svelte";
@@ -76,6 +78,35 @@
   async function toggle() {
     await app.run(() => api.toggle());
   }
+
+  // Only after the connection has been up a minute: never greet the user
+  // with a warning the moment they connect.
+  const showLeaks = $derived(
+    phase === "connected" &&
+      view.connectedMode === "system-proxy" &&
+      view.leaks.length > 0 &&
+      !!view.connectedSince &&
+      now - view.connectedSince > 60_000,
+  );
+  let leakSheet = $state(false);
+  let leakBusy = $state(false);
+
+  async function useTun() {
+    leakBusy = true;
+    await app.run(() => api.setConnectMode("tun"));
+    leakBusy = false;
+    leakSheet = false;
+  }
+
+  async function ignoreAll() {
+    leakBusy = true;
+    await app.run(async () => {
+      for (const leak of view.leaks) await api.ignoreLeak(leak);
+    });
+    leakBusy = false;
+    leakSheet = false;
+    app.showToast("以后不会再提示这些程序");
+  }
 </script>
 
 <div class="screen">
@@ -103,6 +134,19 @@
     </section>
 
     <section class="cards">
+      {#if phase === "connected" && view.healthIssue}
+        <button class="notice issue" onclick={() => app.go("diagnose")} in:fly={{ y: 8, duration: 400 }}>
+          <span class="dot"></span>
+          <span class="notice-text">{view.healthIssue}，点此诊断</span>
+          <span class="chev"><Icon name="chevron" size={14} /></span>
+        </button>
+      {:else if showLeaks}
+        <button class="notice" onclick={() => (leakSheet = true)} in:fly={{ y: 8, duration: 400 }}>
+          <span class="dot"></span>
+          <span class="notice-text">{view.leaks.length} 个程序未经过代理</span>
+          <span class="chev"><Icon name="chevron" size={14} /></span>
+        </button>
+      {/if}
       <button
         class="card"
         onclick={() => app.go("nodes")}
@@ -150,6 +194,22 @@
     </section>
   </main>
 </div>
+
+{#if leakSheet}
+  <Sheet title="这些程序没有经过代理" onclose={() => (leakSheet = false)}>
+    <p>它们会直接连接网络，不使用系统代理设置。常见的有游戏、启动器和命令行工具。</p>
+    <ul class="apps">
+      {#each view.leaks as leak (leak)}
+        <li>{leak.replace(/\.exe$/i, "")}</li>
+      {/each}
+    </ul>
+    <p>如果希望它们也经过代理，可以开启<b>增强模式</b>（需要一次管理员授权）。如果它们本来就不需要代理，忽略即可。</p>
+    {#snippet actions()}
+      <button class="ghost" onclick={ignoreAll} disabled={leakBusy}>忽略这些程序</button>
+      <button class="primary" onclick={useTun} disabled={leakBusy}>开启增强模式</button>
+    {/snippet}
+  </Sheet>
+{/if}
 
 <style>
   .screen {
@@ -239,6 +299,55 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+  }
+  /* Quiet, card-styled hint; details live in a sheet. */
+  .notice {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--line);
+    font-size: 12.5px;
+    color: var(--text-2);
+    text-align: left;
+    transition: background 0.15s, color 0.15s;
+  }
+  .notice:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .notice .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ok);
+    flex-shrink: 0;
+  }
+  .notice-text {
+    flex: 1;
+  }
+  .notice.issue .dot {
+    background: var(--bad);
+  }
+  .notice.issue {
+    color: var(--text);
+  }
+  .apps {
+    margin: 4px 0 10px;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .apps li {
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 12.5px;
   }
   .card {
     display: flex;

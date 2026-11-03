@@ -35,6 +35,11 @@ impl AppPaths {
         self.profiles_dir.join("profiles.json")
     }
 
+    /// Rotating log files (core output + app events).
+    pub fn logs_dir(&self) -> PathBuf {
+        self.program_data.join("logs")
+    }
+
     /// The user's own config edits, applied on top of every profile.
     pub fn global_override_path(&self) -> PathBuf {
         self.program_data.join("override.yaml")
